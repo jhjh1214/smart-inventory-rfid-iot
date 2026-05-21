@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Inventory System</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body class="bg-slate-100 min-h-screen flex">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <svg class="w-6 h-6 text-indigo-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+      </svg>
+      <span class="sidebar-title">Smart Inventory</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-tab="overview">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+        </svg>
+        <span>Overview</span>
+      </button>
+      <button class="nav-item" data-tab="inventory">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+        </svg>
+        <span>Inventory</span>
+      </button>
+      <button class="nav-item" data-tab="analytics">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        </svg>
+        <span>Analytics</span>
+      </button>
+      <button class="nav-item" data-tab="tags">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/>
+        </svg>
+        <span>RFID Tags</span>
+      </button>
+      <button class="nav-item" data-tab="alerts">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+        </svg>
+        <span>Alerts</span>
+        <span id="alert-badge" class="nav-badge hidden">0</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="flex items-center gap-2 px-4 py-2">
+        <span id="mqtt-dot" class="w-2 h-2 rounded-full bg-gray-400 shrink-0"></span>
+        <span id="mqtt-label" class="text-slate-400 text-xs">Connecting…</span>
+      </div>
+      <div class="px-4 py-2 text-slate-400 text-xs" id="user-info"></div>
+      <button id="logout-btn" onclick="doLogout()"
+        class="mx-4 mb-4 text-xs text-slate-400 hover:text-white transition">Sign out</button>
+    </div>
+  </aside>
+
+  <!-- ── Main content ────────────────────────────────────────────────────── -->
+  <div class="flex-1 flex flex-col min-w-0">
+
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="flex items-center gap-3">
+        <span id="page-title" class="text-lg font-semibold text-slate-800">Overview</span>
+      </div>
+      <div class="flex items-center gap-4">
+        <span id="clock" class="text-slate-500 text-sm tabular-nums"></span>
+        <span id="scan-live-badge" class="hidden live-badge">LIVE SCAN</span>
+      </div>
+    </header>
+
+    <!-- Alert banner -->
+    <div id="alert-banner" class="hidden bg-red-500 text-white px-6 py-2.5 flex items-center justify-between text-sm">
+      <span id="alert-banner-text"></span>
+      <button onclick="dismissBanner()" class="ml-4 font-bold hover:opacity-80">x</button>
+    </div>
+
+    <!-- ── TAB: Overview ───────────────────────────────────────────────── -->
+    <div id="tab-overview" class="tab-content active p-6 space-y-6">
+
+      <!-- KPI row -->
+      <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        <div class="kpi-card border-l-indigo-500">
+          <p class="kpi-label">Total Items</p>
+          <p id="kpi-total-items" class="kpi-value">–</p>
+        </div>
+        <div class="kpi-card border-l-teal-500">
+          <p class="kpi-label">Total Qty</p>
+          <p id="kpi-total-qty" class="kpi-value">–</p>
+        </div>
+        <div class="kpi-card border-l-green-500">
+          <p class="kpi-label">Health Score</p>
+          <p id="kpi-health" class="kpi-value">–</p>
+          <p class="kpi-sub">% items healthy</p>
+        </div>
+        <div class="kpi-card border-l-amber-500">
+          <p class="kpi-label">Low Stock</p>
+          <p id="kpi-low-stock" class="kpi-value text-amber-600">–</p>
+        </div>
+        <div class="kpi-card border-l-red-500">
+          <p class="kpi-label">Out of Stock</p>
+          <p id="kpi-out-of-stock" class="kpi-value text-red-600">–</p>
+        </div>
+        <div class="kpi-card border-l-purple-500">
+          <p class="kpi-label">Today Scans</p>
+          <p id="kpi-today-scans" class="kpi-value">–</p>
+        </div>
+      </div>
+
+      <!-- Charts row 1 -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="card">
+          <h2 class="card-title">Transaction Trends (7 days)</h2>
+          <canvas id="chart-trends" height="180"></canvas>
+        </div>
+        <div class="card">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <h2 class="card-title mb-3">Inventory Status</h2>
+              <canvas id="chart-status-donut" height="160"></canvas>
+            </div>
+            <div>
+              <h2 class="card-title mb-3">Tag States</h2>
+              <canvas id="chart-tags-donut" height="160"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent scans -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="card lg:col-span-2">
+          <h2 class="card-title mb-3">Live Scan Feed</h2>
+          <ul id="scan-log" class="divide-y divide-slate-100 max-h-72 overflow-y-auto">
+            <li class="py-3 text-slate-400 text-sm text-center">No scans yet</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2 class="card-title mb-3">Quick Stats</h2>
+          <div class="space-y-3">
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Dead stock items</span>
+              <span id="qs-dead-stock" class="font-semibold text-slate-700">–</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Security alerts today</span>
+              <span id="qs-security-today" class="font-semibold text-red-600">–</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Tags in inventory</span>
+              <span id="qs-tags-in" class="font-semibold text-slate-700">–</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Tags dispatched</span>
+              <span id="qs-tags-out" class="font-semibold text-slate-700">–</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Tags consumed</span>
+              <span id="qs-tags-consumed" class="font-semibold text-slate-700">–</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-slate-500">Total tags tracked</span>
+              <span id="qs-tags-total" class="font-semibold text-slate-700">–</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Inventory ──────────────────────────────────────────────── -->
+    <div id="tab-inventory" class="tab-content p-6 space-y-4">
+      <div class="card">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="card-title">Inventory Items</h2>
+          <button onclick="openAddItemModal()"
+            class="btn-primary text-sm">+ Add Item</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="table-head">
+              <tr>
+                <th class="th text-left">Item</th>
+                <th class="th text-right">Qty</th>
+                <th class="th text-center">Threshold</th>
+                <th class="th text-center">Status</th>
+                <th class="th text-center">Updated</th>
+                <th class="th text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="inventory-tbody" class="divide-y divide-slate-100">
+              <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Analytics ─────────────────────────────────────────────── -->
+    <div id="tab-analytics" class="tab-content p-6 space-y-6">
+
+      <!-- Stock / risk charts -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="card">
+          <h2 class="card-title">Current Stock Levels</h2>
+          <canvas id="chart-stock" height="200"></canvas>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Days Remaining (Risk)</h2>
+          <canvas id="chart-risk" height="200"></canvas>
+        </div>
+      </div>
+
+      <!-- Per-item analytics table -->
+      <div class="card">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="card-title">Per-Item Analytics</h2>
+          <span class="text-xs text-slate-400">Based on 30-day usage history</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="table-head">
+              <tr>
+                <th class="th text-left">Item</th>
+                <th class="th text-center">ABC</th>
+                <th class="th text-right">Avg Daily</th>
+                <th class="th text-right">Forecast</th>
+                <th class="th text-right">EOQ</th>
+                <th class="th text-right">Days Left</th>
+                <th class="th text-center">Risk</th>
+              </tr>
+            </thead>
+            <tbody id="analytics-tbody" class="divide-y divide-slate-100">
+              <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: RFID Tags ──────────────────────────────────────────────── -->
+    <div id="tab-tags" class="tab-content p-6 space-y-4">
+      <div class="card">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="card-title">RFID Tag Lifecycle</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Tags auto-registered on first scan. out → in → consumed.</p>
+          </div>
+          <div class="flex gap-2 text-xs">
+            <span class="badge badge-info">out = with product</span>
+            <span class="badge badge-success">in = in warehouse</span>
+            <span class="badge badge-neutral">consumed = used</span>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="table-head">
+              <tr>
+                <th class="th text-left">Tag UID</th>
+                <th class="th text-left">Item</th>
+                <th class="th text-center">State</th>
+                <th class="th text-center">Last Scan</th>
+                <th class="th text-center">Registered</th>
+                <th class="th text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody id="tags-tbody" class="divide-y divide-slate-100">
+              <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No tags registered</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Alerts ─────────────────────────────────────────────────── -->
+    <div id="tab-alerts" class="tab-content p-6 space-y-4">
+      <div class="card">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="card-title">System Alerts</h2>
+          <button onclick="markAllRead()" class="text-sm text-indigo-600 hover:underline">
+            Mark all read
+          </button>
+        </div>
+        <ul id="alerts-list" class="divide-y divide-slate-100 max-h-[60vh] overflow-y-auto">
+          <li class="py-6 text-slate-400 text-sm text-center">No alerts</li>
+        </ul>
+      </div>
+    </div>
+
+  </div><!-- end main -->
+
+  <!-- ── Modals ──────────────────────────────────────────────────────────── -->
+
+  <!-- Add Item -->
+  <div id="modal-add-item" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 class="text-lg font-semibold text-gray-800 mb-4">Add Inventory Item</h3>
+      <form id="form-add-item" class="space-y-3">
+        <div>
+          <label class="form-label">Item ID</label>
+          <input name="id" required placeholder="item-009" class="form-input" />
+        </div>
+        <div>
+          <label class="form-label">Name</label>
+          <input name="name" required placeholder="Item name" class="form-input" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">Quantity</label>
+            <input name="quantity" type="number" min="0" value="0" class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Unit</label>
+            <input name="unit" placeholder="pcs" class="form-input" />
+          </div>
+        </div>
+        <div>
+          <label class="form-label">Low Stock Threshold</label>
+          <input name="low_stock_threshold" type="number" min="0" value="5" class="form-input" />
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 btn-primary">Add Item</button>
+          <button type="button" onclick="closeModal('modal-add-item')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Edit Item -->
+  <div id="modal-edit-item" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 class="text-lg font-semibold text-gray-800 mb-4">Edit Item</h3>
+      <form id="form-edit-item" class="space-y-3">
+        <input type="hidden" name="id" />
+        <div>
+          <label class="form-label">Name</label>
+          <input name="name" required class="form-input" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="form-label">Quantity</label>
+            <input name="quantity" type="number" min="0" class="form-input" />
+          </div>
+          <div>
+            <label class="form-label">Unit</label>
+            <input name="unit" class="form-input" />
+          </div>
+        </div>
+        <div>
+          <label class="form-label">Low Stock Threshold</label>
+          <input name="low_stock_threshold" type="number" min="0" class="form-input" />
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 btn-primary">Save Changes</button>
+          <button type="button" onclick="closeModal('modal-edit-item')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Admin Tag Return -->
+  <div id="modal-tag-return" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 class="text-lg font-semibold text-gray-800 mb-1">Admin: Return Tag to Inventory</h3>
+      <p class="text-sm text-slate-500 mb-4">This will reset the tag state to <em>out</em> and increment stock by 1.</p>
+      <form id="form-tag-return" class="space-y-3">
+        <input type="hidden" id="return-tag-uid" />
+        <div>
+          <label class="form-label">Return Reason / Note</label>
+          <textarea id="return-note" rows="3" placeholder="e.g. Customer return, damaged unit refund…"
+            class="form-input resize-none"></textarea>
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 bg-amber-500 text-white py-2 rounded-lg hover:bg-amber-600 transition text-sm font-medium">
+            Confirm Return
+          </button>
+          <button type="button" onclick="closeModal('modal-tag-return')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

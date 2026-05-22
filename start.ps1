@@ -31,29 +31,30 @@ try {
         return ($null -ne $result)
     }
 
-    if (Test-Port1883) {
-        Write-OK "Mosquitto already running on port 1883"
-    } else {
-        if (-not (Test-Path $MOSQUITTO)) {
-            Write-Fail "Mosquitto not found at: $MOSQUITTO"
-            throw "Mosquitto missing"
-        }
-
-        Start-Process -FilePath $MOSQUITTO -ArgumentList "-c `"$CONF`"" -WindowStyle Normal
-
-        Write-Warn "Waiting for broker..."
-        $waited = 0
-        while ($waited -lt 10) {
-            Start-Sleep -Seconds 1
-            $waited++
-            if (Test-Port1883) { break }
-        }
-
-        if (-not (Test-Port1883)) {
-            throw "Mosquitto did not start within 10 seconds"
-        }
-        Write-OK "Broker ready on port 1883"
+    if (-not (Test-Path $MOSQUITTO)) {
+        Write-Fail "Mosquitto not found at: $MOSQUITTO"
+        throw "Mosquitto missing"
     }
+
+    # Always stop any existing Mosquitto processes to avoid stale/zombie brokers
+    Write-Warn "Stopping any existing Mosquitto processes..."
+    Get-Process -Name "mosquitto" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 1
+
+    Start-Process -FilePath $MOSQUITTO -ArgumentList "-c `"$CONF`"" -WindowStyle Normal
+
+    Write-Warn "Waiting for broker..."
+    $waited = 0
+    while ($waited -lt 10) {
+        Start-Sleep -Seconds 1
+        $waited++
+        if (Test-Port1883) { break }
+    }
+
+    if (-not (Test-Port1883)) {
+        throw "Mosquitto did not start within 10 seconds"
+    }
+    Write-OK "Broker ready on port 1883"
 
     # ── 2. Flask backend ──────────────────────────────────────────────────
     Write-Step 2 "Starting Flask backend"

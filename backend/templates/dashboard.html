@@ -629,6 +629,11 @@
       <p class="text-sm text-slate-500 mb-4">Tag will be marked <strong>Return Pending</strong>. Stock only updates once the physical tag is scanned at the reader.</p>
       <form id="form-tag-return" class="space-y-3">
         <input type="hidden" id="return-tag-uid" />
+        <div>
+          <label class="form-label">Return Reason / Note</label>
+          <textarea id="return-note" rows="3" placeholder="e.g. Customer return, damaged unit refund…"
+            class="form-input resize-none"></textarea>
+        </div>
         <div class="flex gap-2 pt-2">
           <button type="submit" class="flex-1 bg-amber-500 text-white py-2 rounded-lg hover:bg-amber-600 transition text-sm font-medium">
             Mark Return Pending

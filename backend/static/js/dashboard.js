@@ -677,7 +677,8 @@ function openEditModal(item) {
 
 function openReturnModal(uid) {
   document.getElementById('return-tag-uid').value = uid;
-  document.getElementById('return-note').value    = '';
+  const noteEl = document.getElementById('return-note');
+  if (noteEl) noteEl.value = '';
   openModal('modal-tag-return');
 }
 
@@ -732,10 +733,11 @@ function setupForms() {
 
   document.getElementById('form-tag-return').addEventListener('submit', async e => {
     e.preventDefault();
-    const uid = document.getElementById('return-tag-uid').value;
-    const r   = await fetch(`/api/tags/${encodeURIComponent(uid)}/return`, {
+    const uid  = document.getElementById('return-tag-uid').value;
+    const note = (document.getElementById('return-note')?.value || '').trim() || 'Admin return';
+    const r    = await fetch(`/api/tags/${encodeURIComponent(uid)}/return`, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({}),
+      body: JSON.stringify({ note }),
     });
     if (r.ok) {
       closeModal('modal-tag-return');

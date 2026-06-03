@@ -628,11 +628,21 @@ async function markAllRead() {
 }
 
 async function clearReadAlerts() {
-  const ok = await customConfirm('Clear Dismissed Alerts', 'Delete all read/dismissed alerts? This cannot be undone.', false);
+  const readCount = _alerts.filter(a => a.is_read).length;
+  if (!readCount) return showToast('No dismissed alerts to clear', 'info');
+  const ok = await customConfirm(
+    'Clear Dismissed Alerts',
+    `Permanently delete ${readCount} read alert${readCount > 1 ? 's' : ''}?`,
+    true
+  );
   if (!ok) return;
-  await fetch('/api/alerts/read', { method:'DELETE' });
-  fetchAlerts();
-  showToast('Dismissed alerts cleared', 'info');
+  const r = await fetch('/api/alerts/read', { method:'DELETE' });
+  if (r.ok) {
+    fetchAlerts();
+    showToast('Dismissed alerts cleared', 'info');
+  } else {
+    showToast('Failed to clear alerts (status ' + r.status + ')', 'error');
+  }
 }
 
 function exportAlertsCSV() {

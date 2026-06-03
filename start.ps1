@@ -16,18 +16,18 @@ function Write-OK($msg)   { Write-Host "      OK  $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "      >>  $msg" -ForegroundColor Yellow }
 function Write-Fail($msg) { Write-Host "      !!  $msg" -ForegroundColor Red }
 
-function Test-Port1883 {
-    $result = netstat -an 2>$null | Select-String "0\.0\.0\.0:1883\s+0\.0\.0\.0:0\s+LISTENING"
-    return ($null -ne $result)
-}
-
-function Wait-PortFree {
-    for ($i = 0; $i -lt 10; $i++) {
-        Start-Sleep -Milliseconds 600
-        $bound = netstat -an 2>$null | Select-String ":1883\s"
-        if (-not $bound) { return $true }
+# TCP connection test — the only reliable way to know a port is live
+function Test-Port([int]$port) {
+    try {
+        $client  = New-Object System.Net.Sockets.TcpClient
+        $connect = $client.BeginConnect('127.0.0.1', $port, $null, $null)
+        $ok      = $connect.AsyncWaitHandle.WaitOne(800, $false)
+        if ($ok) { $client.EndConnect($connect) }
+        $client.Close()
+        return $ok
+    } catch {
+        return $false
     }
-    return $false
 }
 
 try {
@@ -37,53 +37,59 @@ try {
     Write-Host "   Smart Inventory System - Startup        " -ForegroundColor White
     Write-Host "============================================" -ForegroundColor Cyan
 
-    # ── 1. Mosquitto ──────────────────────────────────────────────────────────
+    # ── 1. Mosquitto ─────────────────────────────────────────────────────────
     Write-Step 1 "Starting Mosquitto MQTT broker"
 
     if (-not (Test-Path $MOSQUITTO)) {
         Write-Fail "Mosquitto not found at: $MOSQUITTO"
-        throw "Mosquitto missing"
+        throw "Mosquitto missing — install from https://mosquitto.org/download/"
     }
 
-    # ── Stop all existing Mosquitto processes ─────────────────────────────────
+    # Stop every existing Mosquitto process and wait for it to die
     $procs = Get-Process -Name "mosquitto" -ErrorAction SilentlyContinue
     if ($procs) {
         Write-Warn "Stopping $($procs.Count) existing Mosquitto process(es)..."
         $procs | Stop-Process -Force
-        # Wait for each process to fully exit
         foreach ($p in $procs) {
-            try { $p.WaitForExit(5000) | Out-Null } catch {}
+            try { $p.WaitForExit(6000) | Out-Null } catch {}
         }
-        Write-OK "Mosquitto process(es) stopped"
-    } else {
-        Write-Warn "No existing Mosquitto process running"
-    }
-
-    # ── Wait for port 1883 to be free ─────────────────────────────────────────
-    Write-Warn "Waiting for port 1883 to be released..."
-    $portFree = Wait-PortFree
-    if ($portFree) {
-        Write-OK "Port 1883 is free"
-    } else {
-        Write-Warn "Port 1883 still in use — attempting to start anyway"
-    }
-
-    # ── Start fresh Mosquitto instance ────────────────────────────────────────
-    Start-Process -FilePath $MOSQUITTO -ArgumentList "-c `"$CONF`"" -WindowStyle Normal
-
-    Write-Warn "Waiting for broker to listen on port 1883..."
-    $waited = 0
-    $ready  = $false
-    while ($waited -lt 15) {
+        # Extra wait so the OS releases the port binding
         Start-Sleep -Seconds 1
-        $waited++
-        if (Test-Port1883) { $ready = $true; break }
+        Write-OK "Previous Mosquitto stopped"
+    }
+
+    # Confirm port 1883 is free before starting (retry up to 5s)
+    $portWaited = 0
+    while ((Test-Port 1883) -and $portWaited -lt 5) {
+        Start-Sleep -Seconds 1
+        $portWaited++
+    }
+    if (Test-Port 1883) {
+        Write-Warn "Port 1883 still in use after stop — attempting to start anyway"
+    }
+
+    # Launch Mosquitto and keep a reference so we can detect crashes
+    $mosqProc = Start-Process -FilePath $MOSQUITTO `
+                              -ArgumentList "-c", "`"$CONF`"" `
+                              -WindowStyle Normal `
+                              -PassThru
+
+    Write-Warn "Waiting for Mosquitto (PID $($mosqProc.Id)) to bind port 1883..."
+    $ready = $false
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 1
+
+        if ($mosqProc.HasExited) {
+            throw "Mosquitto exited immediately (code $($mosqProc.ExitCode)) — check the config file path or port conflicts"
+        }
+
+        if (Test-Port 1883) { $ready = $true; break }
     }
 
     if ($ready) {
         Write-OK "Broker ready on port 1883"
     } else {
-        throw "Mosquitto did not start within 15 seconds — check the Mosquitto window for errors"
+        throw "Mosquitto did not bind port 1883 within 15 seconds"
     }
 
     # ── 2. Flask backend ──────────────────────────────────────────────────────
@@ -97,17 +103,10 @@ try {
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -WindowStyle Normal
 
     Write-Warn "Waiting for backend on port 5000..."
-    $waited = 0
-    $ready  = $false
-    while ($waited -lt 25) {
+    $ready = $false
+    for ($i = 0; $i -lt 25; $i++) {
         Start-Sleep -Seconds 1
-        $waited++
-        try {
-            $null = Invoke-WebRequest -Uri "http://localhost:5000/api/status" `
-                                      -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
-            $ready = $true
-            break
-        } catch { }
+        if (Test-Port 5000) { $ready = $true; break }
     }
 
     if ($ready) {
@@ -135,9 +134,8 @@ try {
     Write-Host "   Dashboard -> http://localhost:5000       " -ForegroundColor White
     Write-Host "============================================" -ForegroundColor Green
 
-    # Print laptop IPs — useful for filling in config.py broker on new networks
     Write-Host ""
-    Write-Host "   Laptop IP addresses (for ESP32 config.py):" -ForegroundColor Gray
+    Write-Host "   Laptop IP addresses (for ESP32 config.py broker):" -ForegroundColor Gray
     try {
         Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
             Where-Object { $_.PrefixOrigin -ne 'WellKnown' -and $_.IPAddress -ne '127.0.0.1' } |

@@ -58,14 +58,14 @@ function esc(s) {
 
 function fmtDate(ts) {
   if (!ts) return '—';
-  const d = new Date(ts.replace(' ','T'));
+  const d = new Date(ts.replace(' ','T') + 'Z');
   return d.toLocaleString([], { month:'short', day:'numeric',
     hour:'2-digit', minute:'2-digit' });
 }
 
 function fmtTime(ts) {
   if (!ts) return '—';
-  const d = new Date(ts.replace(' ','T'));
+  const d = new Date(ts.replace(' ','T') + 'Z');
   return d.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
 }
 

@@ -131,6 +131,58 @@ def get_abc_analysis():
     return result
 
 
+def get_pipeline_summary():
+    """Tag counts at each pipeline stage + per-item breakdown + rack utilisation."""
+    conn = get_db()
+    c = conn.cursor()
+
+    stages = ['tagged', 'in_transit', 'received', 'racked',
+              'dispatched', 'returned', 'out', 'in', 'consumed']
+
+    totals = {}
+    for stage in stages:
+        c.execute('SELECT COUNT(*) FROM rfid_tags WHERE state = ?', (stage,))
+        n = c.fetchone()[0]
+        if n:
+            totals[stage] = n
+
+    c.execute('''
+        SELECT r.item_id, i.name AS item_name, r.state, COUNT(*) AS cnt
+        FROM rfid_tags r LEFT JOIN items i ON r.item_id = i.id
+        GROUP BY r.item_id, r.state ORDER BY r.item_id, r.state
+    ''')
+    items_map = {}
+    for row in c.fetchall():
+        iid = row['item_id']
+        if iid not in items_map:
+            items_map[iid] = {'item_id': iid, 'item_name': row['item_name'],
+                              **{s: 0 for s in stages}}
+        if row['state'] in stages:
+            items_map[iid][row['state']] = row['cnt']
+
+    c.execute('''
+        SELECT rack_location, COUNT(*) AS cnt FROM rfid_tags
+        WHERE state = 'racked' AND rack_location IS NOT NULL
+        GROUP BY rack_location ORDER BY rack_location
+    ''')
+    rack_stats = [dict(r) for r in c.fetchall()]
+
+    c.execute('''
+        SELECT j.*, i.name AS item_name FROM write_jobs j
+        LEFT JOIN items i ON j.item_id = i.id
+        ORDER BY j.created_at DESC LIMIT 20
+    ''')
+    jobs = [dict(r) for r in c.fetchall()]
+
+    conn.close()
+    return {
+        'totals':     totals,
+        'per_item':   list(items_map.values()),
+        'rack_stats': rack_stats,
+        'jobs':       jobs,
+    }
+
+
 def get_inventory_summary():
     """Overall inventory health metrics."""
     conn = get_db()

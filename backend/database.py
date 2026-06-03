@@ -52,7 +52,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS rfid_tags (
             uid           TEXT PRIMARY KEY,
             item_id       TEXT NOT NULL,
-            state         TEXT DEFAULT 'out',
+            state         TEXT DEFAULT 'tagged',
+            rack_location TEXT,
             registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_scan     TIMESTAMP,
             FOREIGN KEY (item_id) REFERENCES items(id)
@@ -65,39 +66,25 @@ def init_db():
             role          TEXT DEFAULT 'viewer',
             created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS write_jobs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id     TEXT UNIQUE NOT NULL,
+            item_id      TEXT NOT NULL,
+            quantity     INTEGER NOT NULL,
+            written      INTEGER DEFAULT 0,
+            status       TEXT DEFAULT 'pending',
+            created_by   TEXT DEFAULT 'admin',
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            FOREIGN KEY (item_id) REFERENCES items(id)
+        );
     ''')
 
-    # Seed demo items on fresh database
-    c.execute('SELECT COUNT(*) FROM items')
-    if c.fetchone()[0] == 0:
-        demo_items = [
-            ('item-001', 'USB Cable Type-C',     15, 'pcs',   5),
-            ('item-002', 'HDMI Cable',             8, 'pcs',   3),
-            ('item-003', 'AA Batteries (pack)',    4, 'packs', 5),
-            ('item-004', 'Ethernet Cable 2m',     12, 'pcs',   4),
-            ('item-005', 'Mouse Pad',              3, 'pcs',   5),
-            ('item-006', 'RFID Reader Module',     6, 'pcs',   2),
-            ('item-007', 'ESP32 Dev Board',        2, 'pcs',   3),
-            ('item-008', 'Jumper Wires (set)',    20, 'sets',  5),
-        ]
-        c.executemany(
-            'INSERT INTO items (id, name, quantity, unit, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
-            demo_items
-        )
-
-    # Seed default admin on fresh database
-    c.execute('SELECT COUNT(*) FROM users')
-    if c.fetchone()[0] == 0:
-        c.execute(
-            'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-            ('admin', generate_password_hash('admin123'), 'admin')
-        )
-        print('[DB] Default admin created — username: admin  password: admin123')
-        print('[DB] Change password after first login!')
-
-    # ── Schema migrations (safe to run on existing DBs) ──────────────────
+    # ── Schema migrations (safe to run on existing databases) ────────────────
     migrations = [
         "ALTER TABLE rfid_tags ADD COLUMN last_scan TIMESTAMP",
+        "ALTER TABLE rfid_tags ADD COLUMN rack_location TEXT",
         "ALTER TABLE transactions ADD COLUMN performed_by TEXT DEFAULT 'system'",
         "ALTER TABLE transactions ADD COLUMN note TEXT",
     ]
@@ -106,6 +93,34 @@ def init_db():
             c.execute(sql)
         except Exception:
             pass  # column already exists
+
+    # ── Seed demo items on fresh database ────────────────────────────────────
+    c.execute('SELECT COUNT(*) FROM items')
+    if c.fetchone()[0] == 0:
+        demo_items = [
+            ('item-001', 'USB Cable Type-C',    15, 'pcs',   5),
+            ('item-002', 'HDMI Cable',            8, 'pcs',   3),
+            ('item-003', 'AA Batteries (pack)',   4, 'packs', 5),
+            ('item-004', 'Ethernet Cable 2m',    12, 'pcs',   4),
+            ('item-005', 'Mouse Pad',             3, 'pcs',   5),
+            ('item-006', 'RFID Reader Module',    6, 'pcs',   2),
+            ('item-007', 'ESP32 Dev Board',       2, 'pcs',   3),
+            ('item-008', 'Jumper Wires (set)',   20, 'sets',  5),
+        ]
+        c.executemany(
+            'INSERT INTO items (id, name, quantity, unit, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
+            demo_items
+        )
+
+    # ── Seed default admin on fresh database ─────────────────────────────────
+    c.execute('SELECT COUNT(*) FROM users')
+    if c.fetchone()[0] == 0:
+        c.execute(
+            'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
+            ('admin', generate_password_hash('admin123'), 'admin')
+        )
+        print('[DB] Default admin created — username: admin  password: admin123')
+        print('[DB] Change password after first login!')
 
     conn.commit()
     conn.close()

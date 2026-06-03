@@ -8,8 +8,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from database import init_db, get_db
 from analytics import (get_all_analytics, get_item_analytics,
                         get_transaction_trends, get_abc_analysis,
-                        get_inventory_summary)
-from mqtt_subscriber import start_mqtt, get_status as mqtt_status
+                        get_inventory_summary, get_pipeline_summary)
+from mqtt_subscriber import (start_mqtt, get_status as mqtt_status,
+                              publish as mqtt_publish,
+                              TOPIC_FACTORY_JOB)
 import events
 
 app = Flask(__name__)
@@ -362,14 +364,14 @@ def return_tag(uid):
         conn.close()
         return jsonify({'error': 'Tag not found'}), 404
 
-    if tag['state'] != 'consumed':
+    if tag['state'] not in ('consumed', 'dispatched'):
         conn.close()
-        return jsonify({'error': 'Tag is not in consumed state'}), 400
+        return jsonify({'error': f'Tag is in state "{tag["state"]}" — only dispatched/consumed tags can be returned'}), 400
 
     prev_qty = tag['quantity']
     new_qty  = prev_qty + 1
 
-    c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?', ('out', uid))
+    c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?', ('returned', uid))
     c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (new_qty, tag['item_id']))
     c.execute(
         '''INSERT INTO transactions (item_id, action, quantity_change, previous_quantity,
@@ -446,6 +448,66 @@ def change_password(user_id):
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
+
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+
+@app.route('/api/pipeline')
+@login_required
+def api_pipeline():
+    return jsonify(get_pipeline_summary())
+
+
+# ── Factory write jobs ────────────────────────────────────────────────────────
+
+@app.route('/api/factory/jobs', methods=['GET'])
+@login_required
+def get_write_jobs():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        SELECT j.*, i.name AS item_name
+        FROM write_jobs j LEFT JOIN items i ON j.item_id = i.id
+        ORDER BY j.created_at DESC LIMIT 30
+    ''')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route('/api/factory/jobs', methods=['POST'])
+@admin_required
+def create_write_job():
+    from datetime import datetime as dt
+    data     = request.get_json() or {}
+    item_id  = data.get('item_id')
+    quantity = int(data.get('quantity', 1))
+    if not item_id or quantity < 1:
+        return jsonify({'error': 'item_id and quantity required'}), 400
+
+    batch_id = f"batch-{dt.now().strftime('%Y%m%d%H%M%S')}-{item_id}"
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT id FROM items WHERE id = ?', (item_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': f'Item {item_id} not found'}), 404
+
+    c.execute('''INSERT INTO write_jobs (batch_id, item_id, quantity, status, created_by)
+               VALUES (?, ?, ?, 'pending', ?)''',
+              (batch_id, item_id, quantity, session.get('username', 'admin')))
+    conn.commit()
+    conn.close()
+
+    mqtt_publish(TOPIC_FACTORY_JOB, json.dumps({
+        'batch_id': batch_id,
+        'item_id':  item_id,
+        'quantity': quantity,
+    }))
+    events.push({'type': 'job_created', 'batch_id': batch_id,
+                 'item_id': item_id, 'quantity': quantity})
+    return jsonify({'status': 'ok', 'batch_id': batch_id}), 201
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

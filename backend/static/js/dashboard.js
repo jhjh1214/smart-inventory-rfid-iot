@@ -96,8 +96,8 @@ function clockTick() {
 // ── Tab navigation ────────────────────────────────────────────────────────────
 function setupTabs() {
   const titles = {
-    overview:'Overview', inventory:'Inventory',
-    analytics:'Analytics', tags:'RFID Tags', alerts:'Alerts'
+    overview:'Overview', inventory:'Inventory', analytics:'Analytics',
+    tags:'RFID Tags', manufacturing:'Manufacturing', alerts:'Alerts'
   };
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -112,7 +112,8 @@ function setupTabs() {
       if (tab === 'inventory') fetchItems();
       if (tab === 'analytics') fetchAnalytics();
       if (tab === 'tags')      fetchTags();
-      if (tab === 'alerts')    fetchAlerts();
+      if (tab === 'alerts')         fetchAlerts();
+      if (tab === 'manufacturing')  fetchPipeline();
     });
   });
 }
@@ -635,12 +636,34 @@ function connectSSE() {
       refreshSummary();
       fetchTransactions();
       fetchItems().then(() => highlightItem(data.item_id));
-
       if (data.type === 'rejected_scan') {
         showBanner(`SECURITY: Consumed tag ${data.tag_uid} scanned for ${data.item_name} — possible reuse`, 'red');
         fetchAlerts();
       } else if (data.action === 'scan_out') {
         fetchAlerts();
+      }
+    }
+
+    if (data.type === 'pipeline') {
+      refreshSummary();
+      fetchTransactions();
+      fetchItems().then(() => highlightItem(data.item_id));
+      if (data.stage === 'received' || data.stage === 'dispatched') fetchAlerts();
+      // Refresh manufacturing tab if open
+      if (document.getElementById('tab-manufacturing').classList.contains('active')) {
+        fetchPipeline();
+      }
+    }
+
+    if (data.type === 'security_alert') {
+      showBanner(`SECURITY: ${data.message}`, 'red');
+      fetchAlerts();
+      refreshSummary();
+    }
+
+    if (data.type === 'job_created') {
+      if (document.getElementById('tab-manufacturing').classList.contains('active')) {
+        fetchPipeline();
       }
     }
   };
@@ -671,6 +694,164 @@ async function doLogout() {
   await fetch('/api/logout', { method: 'POST' });
   window.location.href = '/login';
 }
+
+// ── Pipeline / Manufacturing tab ──────────────────────────────────────────────
+
+const PIPELINE_STAGES = [
+  { key: 'tagged',      label: 'Tagged',      color: '#6366f1', desc: 'Written at factory' },
+  { key: 'in_transit',  label: 'In Transit',  color: '#f59e0b', desc: 'Left factory floor' },
+  { key: 'received',    label: 'Received',    color: '#3b82f6', desc: 'At warehouse dock'  },
+  { key: 'racked',      label: 'Racked',      color: '#22c55e', desc: 'On warehouse shelf'  },
+  { key: 'dispatched',  label: 'Dispatched',  color: '#94a3b8', desc: 'Sent to customer'   },
+  { key: 'returned',    label: 'Returned',    color: '#f97316', desc: 'Customer return'    },
+];
+
+async function fetchPipeline() {
+  try {
+    const [data, items] = await Promise.all([
+      fetch('/api/pipeline').then(r => r.json()),
+      fetch('/api/items').then(r => r.json()),
+    ]);
+
+    renderPipelineFlow(data.totals);
+    renderPipelineItems(data.per_item, items);
+    renderRackStats(data.rack_stats);
+    renderWriteJobs(data.jobs);
+    populateJobItemSelect(items);
+
+    // Show/hide write job form based on role
+    const card = document.getElementById('write-job-card');
+    if (card) card.style.display = currentRole === 'admin' ? '' : 'none';
+  } catch {}
+}
+
+function renderPipelineFlow(totals) {
+  const el = document.getElementById('pipeline-flow');
+  if (!el) return;
+  const total = PIPELINE_STAGES.reduce((s, st) => s + (totals[st.key] || 0), 0);
+  el.innerHTML = PIPELINE_STAGES.map((st, i) => {
+    const count = totals[st.key] || 0;
+    const pct   = total > 0 ? Math.round(count / total * 100) : 0;
+    return `
+      <div class="flex-1 min-w-24 flex flex-col items-center gap-1">
+        <div class="w-full rounded-lg p-3 text-center text-white text-sm font-semibold"
+             style="background:${st.color}">
+          <div class="text-2xl font-bold">${count}</div>
+          <div class="text-xs opacity-90 mt-0.5">${st.label}</div>
+        </div>
+        <div class="text-xs text-slate-400 text-center leading-tight">${esc(st.desc)}</div>
+        ${i < PIPELINE_STAGES.length - 1 ? '<div class="text-slate-300 text-lg self-center hidden lg:block">&#8594;</div>' : ''}
+      </div>
+      ${i < PIPELINE_STAGES.length - 1 ? '<div class="self-center text-slate-300 text-xl hidden lg:flex">&#10132;</div>' : ''}`;
+  }).join('');
+}
+
+function renderPipelineItems(perItem, items) {
+  const tbody = document.getElementById('pipeline-items-tbody');
+  if (!tbody) return;
+  const itemNameMap = Object.fromEntries(items.map(i => [i.id, i.name]));
+  if (!perItem.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">No tags tracked yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = perItem.map(row => {
+    const name = itemNameMap[row.item_id] || row.item_name || row.item_id;
+    const cell = (key) => {
+      const n = row[key] || 0;
+      const st = PIPELINE_STAGES.find(s => s.key === key);
+      return n > 0
+        ? `<td class="px-4 py-3 text-center font-semibold" style="color:${st ? st.color : '#000'}">${n}</td>`
+        : `<td class="px-4 py-3 text-center text-slate-300">—</td>`;
+    };
+    return `
+      <tr>
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-800">${esc(name)}</div>
+          <div class="text-xs text-gray-400">${esc(row.item_id)}</div>
+        </td>
+        ${cell('tagged')}${cell('in_transit')}${cell('received')}
+        ${cell('racked')}${cell('dispatched')}${cell('returned')}
+      </tr>`;
+  }).join('');
+}
+
+function renderRackStats(rackStats) {
+  const el = document.getElementById('rack-stats');
+  if (!el) return;
+  if (!rackStats.length) {
+    el.innerHTML = '<span class="text-slate-400 text-sm">No racked items</span>';
+    return;
+  }
+  el.innerHTML = rackStats.map(r => `
+    <div class="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-center min-w-20">
+      <div class="text-2xl font-bold text-green-700">${r.cnt}</div>
+      <div class="text-xs text-green-600 font-semibold mt-0.5">${esc(r.rack_location)}</div>
+    </div>`).join('');
+}
+
+function renderWriteJobs(jobs) {
+  const tbody = document.getElementById('jobs-tbody');
+  if (!tbody) return;
+  if (!jobs.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">No jobs yet</td></tr>';
+    return;
+  }
+  const statusBadge = (s) => {
+    const map = { pending:'badge-warning', in_progress:'badge-info', complete:'badge-success' };
+    return `<span class="badge ${map[s] || 'badge-neutral'}">${esc(s)}</span>`;
+  };
+  tbody.innerHTML = jobs.map(j => `
+    <tr>
+      <td class="px-4 py-3">
+        <div class="text-sm font-medium text-gray-800">${esc(j.item_name || j.item_id)}</div>
+        <div class="text-xs text-gray-400">${fmtDate(j.created_at)}</div>
+      </td>
+      <td class="px-4 py-3 text-right font-mono text-sm">${j.quantity}</td>
+      <td class="px-4 py-3 text-right font-mono text-sm text-green-600">${j.written}</td>
+      <td class="px-4 py-3 text-center">${statusBadge(j.status)}</td>
+    </tr>`).join('');
+}
+
+function populateJobItemSelect(items) {
+  const sel = document.getElementById('job-item-id');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Select item…</option>' +
+    items.map(i => `<option value="${esc(i.id)}" ${i.id === current ? 'selected' : ''}>${esc(i.name)}</option>`).join('');
+}
+
+// Write job form submit
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-write-job');
+  if (form) {
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const item_id  = document.getElementById('job-item-id').value;
+      const quantity = parseInt(document.getElementById('job-quantity').value);
+      if (!item_id || quantity < 1) return;
+      const btn = form.querySelector('button[type=submit]');
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+      try {
+        const r = await fetch('/api/factory/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item_id, quantity }),
+        });
+        const d = await r.json();
+        if (r.ok) {
+          form.reset();
+          fetchPipeline();
+        } else {
+          alert('Error: ' + (d.error || 'Failed'));
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Send Job to ESP32';
+      }
+    });
+  }
+});
 
 // ── Load overview charts on start ─────────────────────────────────────────────
 fetchTransactionTrends();

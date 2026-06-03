@@ -6,6 +6,8 @@
   <title>Smart Inventory System</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body class="bg-slate-100 min-h-screen flex">
@@ -101,7 +103,7 @@
     <!-- Alert banner -->
     <div id="alert-banner" class="hidden bg-red-500 text-white px-6 py-2.5 flex items-center justify-between text-sm">
       <span id="alert-banner-text"></span>
-      <button onclick="dismissBanner()" class="ml-4 font-bold hover:opacity-80">x</button>
+      <button onclick="dismissBanner()" class="ml-4 w-6 h-6 rounded-full flex items-center justify-center hover:bg-red-600 transition font-bold leading-none">&times;</button>
     </div>
 
     <!-- ── TAB: Overview ───────────────────────────────────────────────── -->
@@ -159,7 +161,13 @@
       <!-- Recent scans -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div class="card lg:col-span-2">
-          <h2 class="card-title mb-3">Live Scan Feed</h2>
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="card-title">Live Scan Feed</h2>
+            <button class="btn-export" onclick="exportTransactionsCSV()">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              CSV
+            </button>
+          </div>
           <ul id="scan-log" class="divide-y divide-slate-100 max-h-72 overflow-y-auto">
             <li class="py-3 text-slate-400 text-sm text-center">No scans yet</li>
           </ul>
@@ -199,10 +207,20 @@
     <!-- ── TAB: Inventory ──────────────────────────────────────────────── -->
     <div id="tab-inventory" class="tab-content p-6 space-y-4">
       <div class="card">
-        <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center justify-between mb-3">
           <h2 class="card-title">Inventory Items</h2>
-          <button onclick="openAddItemModal()"
-            class="btn-primary text-sm">+ Add Item</button>
+          <button onclick="openAddItemModal()" class="btn-primary text-sm">+ Add Item</button>
+        </div>
+        <div class="table-toolbar">
+          <input class="search-input" placeholder="Search by name or ID…" oninput="filterInventory(this.value)" />
+          <button class="btn-export" onclick="exportItemsCSV()">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            CSV
+          </button>
+          <button class="btn-export" onclick="exportItemsPDF()">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+            PDF
+          </button>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -241,9 +259,21 @@
 
       <!-- Per-item analytics table -->
       <div class="card">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="card-title">Per-Item Analytics</h2>
-          <span class="text-xs text-slate-400">Based on 30-day usage history</span>
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="card-title">Per-Item Analytics</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Based on 30-day usage history</p>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn-export" onclick="exportAnalyticsCSV()">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              CSV
+            </button>
+            <button class="btn-export" onclick="exportAnalyticsPDF()">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+              PDF
+            </button>
+          </div>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -269,16 +299,25 @@
     <!-- ── TAB: RFID Tags ──────────────────────────────────────────────── -->
     <div id="tab-tags" class="tab-content p-6 space-y-4">
       <div class="card">
-        <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center justify-between mb-2">
           <div>
             <h2 class="card-title">RFID Tag Lifecycle</h2>
-            <p class="text-xs text-slate-400 mt-0.5">Tags auto-registered on first scan. out → in → consumed.</p>
+            <p class="text-xs text-slate-400 mt-0.5">All tags tracked through the full supply chain pipeline.</p>
           </div>
-          <div class="flex gap-2 text-xs">
-            <span class="badge badge-info">out = with product</span>
-            <span class="badge badge-success">in = in warehouse</span>
-            <span class="badge badge-neutral">consumed = used</span>
+          <div class="flex flex-wrap gap-1.5 text-xs justify-end max-w-xs">
+            <span class="badge badge-info">tagged</span>
+            <span class="badge badge-warning">in transit</span>
+            <span class="badge badge-success">racked</span>
+            <span class="badge badge-neutral">dispatched</span>
+            <span class="badge badge-orange">returned</span>
           </div>
+        </div>
+        <div class="table-toolbar">
+          <input class="search-input" placeholder="Search by UID, item or state…" oninput="filterTags(this.value)" />
+          <button class="btn-export" onclick="exportTagsCSV()">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            CSV
+          </button>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -287,9 +326,9 @@
                 <th class="th text-left">Tag UID</th>
                 <th class="th text-left">Item</th>
                 <th class="th text-center">State</th>
+                <th class="th text-center">Rack</th>
                 <th class="th text-center">Last Scan</th>
-                <th class="th text-center">Registered</th>
-                <th class="th text-center">Action</th>
+                <th class="th text-center">Actions</th>
               </tr>
             </thead>
             <tbody id="tags-tbody" class="divide-y divide-slate-100">
@@ -305,9 +344,7 @@
       <div class="card">
         <div class="flex items-center justify-between mb-4">
           <h2 class="card-title">System Alerts</h2>
-          <button onclick="markAllRead()" class="text-sm text-indigo-600 hover:underline">
-            Mark all read
-          </button>
+          <button onclick="markAllRead()" class="btn-text">Mark all read</button>
         </div>
         <ul id="alerts-list" class="divide-y divide-slate-100 max-h-[60vh] overflow-y-auto">
           <li class="py-6 text-slate-400 text-sm text-center">No alerts</li>
@@ -354,24 +391,33 @@
         </div>
 
         <div class="card">
-          <h2 class="card-title mb-2">Role Access Summary</h2>
-          <div class="space-y-2 text-sm">
-            <div class="flex items-start gap-2">
-              <span class="badge badge-danger mt-0.5">admin</span>
-              <span class="text-slate-600">Full system access — user management, delete operations, admin returns, all settings</span>
+          <h2 class="card-title mb-3">Role Access Summary</h2>
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Dashboard accounts</div>
+          <div class="space-y-0.5 text-sm mb-3">
+            <div class="role-row">
+              <span class="badge badge-danger">admin</span>
+              <span class="text-slate-600">Full system access — user management, delete operations, admin tag returns, all settings</span>
             </div>
-            <div class="flex items-start gap-2">
-              <span class="badge badge-warning mt-0.5">manager</span>
-              <span class="text-slate-600">Operational access — create inventory, write jobs, view workers, edit items (no user/system management)</span>
+            <div class="role-row">
+              <span class="badge badge-warning">manager</span>
+              <span class="text-slate-600">Operational access — create inventory, write jobs, manage workers, edit items (no user or system management)</span>
             </div>
-            <div class="flex items-start gap-2">
-              <span class="badge badge-neutral mt-0.5">viewer</span>
-              <span class="text-slate-600">Read-only — overview, inventory view, alerts view only</span>
+            <div class="role-row">
+              <span class="badge badge-neutral">viewer</span>
+              <span class="text-slate-600">Read-only — overview, inventory view and alerts only</span>
             </div>
-            <div class="border-t pt-2 mt-2">
-              <div class="text-slate-500 font-medium text-xs uppercase mb-1">Worker (physical badge)</div>
-              <div class="flex items-start gap-2"><span class="badge badge-purple">supervisor</span><span class="text-slate-600">Can operate return gate + all stations</span></div>
-              <div class="flex items-start gap-2 mt-1"><span class="badge badge-info">operator</span><span class="text-slate-600">Factory + warehouse gate/rack stations</span></div>
+          </div>
+          <div class="border-t pt-3">
+            <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Physical badge (worker roles)</div>
+            <div class="space-y-0.5 text-sm">
+              <div class="role-row">
+                <span class="badge badge-purple">supervisor</span>
+                <span class="text-slate-600">All stations — factory, warehouse gate, rack, and return gate</span>
+              </div>
+              <div class="role-row">
+                <span class="badge badge-info">operator</span>
+                <span class="text-slate-600">Factory and warehouse gate/rack stations only</span>
+              </div>
             </div>
           </div>
         </div>
@@ -379,7 +425,16 @@
 
       <!-- Worker list -->
       <div class="card">
-        <h2 class="card-title mb-3">All Workers</h2>
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="card-title">All Workers</h2>
+          <button class="btn-export" onclick="exportWorkersCSV()">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            CSV
+          </button>
+        </div>
+        <div class="table-toolbar">
+          <input class="search-input" placeholder="Search by name or employee ID…" oninput="filterWorkers(this.value)" />
+        </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead class="table-head">
@@ -575,6 +630,22 @@
           <button type="button" onclick="closeModal('modal-tag-return')" class="flex-1 btn-secondary">Cancel</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Custom confirm modal -->
+  <div id="modal-confirm" class="modal-overlay hidden">
+    <div class="confirm-box">
+      <div id="confirm-icon" class="confirm-icon text-center"></div>
+      <div id="confirm-title" class="confirm-title"></div>
+      <div id="confirm-message" class="confirm-message"></div>
+      <div class="flex gap-2">
+        <button id="confirm-ok" class="flex-1 btn-primary text-sm py-2">Confirm</button>
+        <button id="confirm-cancel" class="flex-1 btn-secondary text-sm py-2">Cancel</button>
+      </div>
     </div>
   </div>
 

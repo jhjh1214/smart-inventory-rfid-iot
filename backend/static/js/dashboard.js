@@ -1,5 +1,22 @@
 /* dashboard.js */
 
+// ── Instant tab restore (sync, before any async — prevents flash) ─────────────
+(function () {
+  const t = localStorage.getItem('activeTab');
+  if (!t) return;
+  const btn  = document.querySelector(`.nav-item[data-tab="${t}"]`);
+  const pane = document.getElementById('tab-' + t);
+  if (!btn || !pane) return;
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  pane.classList.add('active');
+  const titles = { overview:'Overview', inventory:'Inventory', analytics:'Analytics',
+    tags:'RFID Tags', workers:'Workers', manufacturing:'Manufacturing', alerts:'Alerts' };
+  const h = document.getElementById('page-title');
+  if (h) h.textContent = titles[t] || t;
+})();
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentRole = 'viewer';
 let charts = {};
@@ -11,6 +28,8 @@ let _tags         = [];
 let _workers      = [];
 let _analytics    = [];
 let _transactions = [];
+let _alerts       = [];
+let _alertFilter  = 'all';
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (async function init() {
@@ -28,10 +47,22 @@ let _transactions = [];
   applyRBAC(currentRole);
   setupTabs();
 
+  // After RBAC, verify saved tab is still accessible; fetch tab-specific data
   const savedTab = localStorage.getItem('activeTab');
   if (savedTab) {
     const savedBtn = document.querySelector(`.nav-item[data-tab="${savedTab}"]`);
-    if (savedBtn && savedBtn.style.display !== 'none') savedBtn.click();
+    if (!savedBtn || savedBtn.style.display === 'none') {
+      // Tab hidden by RBAC — fall back to overview visually
+      document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(p => p.classList.remove('active'));
+      document.querySelector('.nav-item[data-tab="overview"]').classList.add('active');
+      document.getElementById('tab-overview').classList.add('active');
+      document.getElementById('page-title').textContent = 'Overview';
+    } else if (savedTab === 'workers') {
+      fetchWorkers();
+    } else if (savedTab === 'manufacturing') {
+      fetchPipeline();
+    }
   }
 
   setupForms();
@@ -77,15 +108,16 @@ function statusBadge(qty, threshold) {
 
 function tagStateBadge(state) {
   const map = {
-    tagged:      'badge-info',
-    in_transit:  'badge-warning',
-    received:    'badge-info',
-    racked:      'badge-success',
-    dispatched:  'badge-neutral',
-    returned:    'badge-orange',
-    out:         'badge-info',
-    in:          'badge-success',
-    consumed:    'badge-neutral',
+    tagged:          'badge-info',
+    in_transit:      'badge-warning',
+    received:        'badge-info',
+    racked:          'badge-success',
+    dispatched:      'badge-neutral',
+    returned:        'badge-orange',
+    return_pending:  'badge-warning',
+    out:             'badge-info',
+    in:              'badge-success',
+    consumed:        'badge-neutral',
   };
   return `<span class="badge ${map[state] || 'badge-neutral'}">${esc(state.replace(/_/g,' '))}</span>`;
 }
@@ -96,6 +128,7 @@ function actionBadge(action) {
     scan_out:           'badge-info',
     manual_adjust:      'badge-neutral',
     admin_return:       'badge-purple',
+    return_confirmed:   'badge-orange',
     tag_write:          'badge-info',
     factory_exit:       'badge-warning',
     warehouse_receive:  'badge-success',
@@ -481,7 +514,12 @@ function renderTagsTable(tags) {
   tbody.innerHTML = tags.map(t => {
     let action = '<span class="text-gray-300 text-xs">—</span>';
     if (currentRole === 'admin') {
-      if (t.state === 'consumed' || t.state === 'dispatched') {
+      if (t.state === 'return_pending') {
+        action = `<div class="action-cell">
+          <span class="text-xs text-amber-600 font-medium italic">Awaiting scan…</span>
+          <button onclick="deleteTag('${esc(t.uid)}')" class="btn-sm btn-sm-danger">Remove</button>
+        </div>`;
+      } else if (t.state === 'consumed' || t.state === 'dispatched') {
         action = `<div class="action-cell">
           <button onclick="openReturnModal('${esc(t.uid)}')" class="btn-sm btn-sm-warn">Return</button>
           <button onclick="deleteTag('${esc(t.uid)}')" class="btn-sm btn-sm-danger">Remove</button>
@@ -515,11 +553,10 @@ function filterTags(q) {
 async function fetchAlerts() {
   try {
     const alerts = await fetch('/api/alerts').then(r => r.json());
-    const ul     = document.getElementById('alerts-list');
-    if (!ul) return;
+    _alerts = alerts;
 
-    const unread  = alerts.filter(a => !a.is_read);
-    const badge   = document.getElementById('alert-badge');
+    const unread = alerts.filter(a => !a.is_read);
+    const badge  = document.getElementById('alert-badge');
     if (unread.length > 0) {
       badge.textContent = unread.length;
       badge.classList.remove('hidden');
@@ -528,35 +565,53 @@ async function fetchAlerts() {
       badge.classList.add('hidden');
     }
 
-    if (!alerts.length) {
-      ul.innerHTML = '<li class="py-6 text-slate-400 text-sm text-center">No alerts</li>';
-      return;
-    }
-
-    const typeIcon = { out_of_stock:'🔴', low_stock:'🟡', security:'🔒' };
-    ul.innerHTML = alerts.map(a => {
-      const icon  = typeIcon[a.alert_type] || '🔔';
-      const rowCls = a.is_read ? 'opacity-50' : '';
-      const typeBadgeMap = {
-        out_of_stock:'badge-danger', low_stock:'badge-warning', security:'badge-orange',
-      };
-      return `
-        <li class="py-3.5 flex items-start gap-3 ${rowCls}">
-          <span class="text-xl leading-none mt-0.5">${icon}</span>
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-0.5">
-              <span class="badge ${typeBadgeMap[a.alert_type] || 'badge-neutral'}">${esc(a.alert_type.replace(/_/g,' '))}</span>
-              ${a.item_name ? `<span class="text-xs text-gray-500">${esc(a.item_name)}</span>` : ''}
-            </div>
-            <div class="text-sm text-gray-700">${esc(a.message)}</div>
-            <div class="text-xs text-gray-400 mt-0.5">${fmtDate(a.timestamp)}</div>
-          </div>
-          ${!a.is_read
-            ? `<button onclick="markRead(${a.id})" class="btn-sm btn-sm-neutral shrink-0 mt-0.5">Dismiss</button>`
-            : ''}
-        </li>`;
-    }).join('');
+    renderAlerts(alerts);
   } catch {}
+}
+
+function renderAlerts(alerts) {
+  const ul = document.getElementById('alerts-list');
+  if (!ul) return;
+
+  let filtered = alerts;
+  if (_alertFilter === 'unread')      filtered = alerts.filter(a => !a.is_read);
+  else if (_alertFilter !== 'all')    filtered = alerts.filter(a => a.alert_type === _alertFilter);
+
+  if (!filtered.length) {
+    ul.innerHTML = '<li class="py-6 text-slate-400 text-sm text-center">No alerts</li>';
+    return;
+  }
+
+  const typeIcon     = { out_of_stock:'🔴', low_stock:'🟡', security:'🔒' };
+  const typeBadgeMap = { out_of_stock:'badge-danger', low_stock:'badge-warning', security:'badge-orange' };
+  ul.innerHTML = filtered.map(a => {
+    const icon   = typeIcon[a.alert_type] || '🔔';
+    const rowCls = a.is_read ? 'opacity-50' : '';
+    return `
+      <li class="py-3.5 flex items-start gap-3 ${rowCls}">
+        <span class="text-xl leading-none mt-0.5">${icon}</span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-0.5">
+            <span class="badge ${typeBadgeMap[a.alert_type] || 'badge-neutral'}">${esc(a.alert_type.replace(/_/g,' '))}</span>
+            ${a.item_name ? `<span class="text-xs text-gray-500">${esc(a.item_name)}</span>` : ''}
+          </div>
+          <div class="text-sm text-gray-700">${esc(a.message)}</div>
+          <div class="text-xs text-gray-400 mt-0.5">${fmtDate(a.timestamp)}</div>
+        </div>
+        ${!a.is_read
+          ? `<button onclick="markRead(${a.id})" class="btn-sm btn-sm-neutral shrink-0 mt-0.5">Dismiss</button>`
+          : '<span class="text-xs text-gray-300 shrink-0 mt-1">read</span>'}
+      </li>`;
+  }).join('');
+}
+
+function setAlertFilter(type) {
+  _alertFilter = type;
+  document.querySelectorAll('#alert-filters button').forEach(btn => {
+    const active = btn.dataset.filter === type;
+    btn.className = `btn-sm ${active ? 'btn-sm-edit' : 'btn-sm-neutral'}`;
+  });
+  renderAlerts(_alerts);
 }
 
 async function markRead(id) {
@@ -570,6 +625,24 @@ async function markAllRead() {
   fetchAlerts();
   refreshSummary();
   showToast('All alerts marked as read', 'success');
+}
+
+async function clearReadAlerts() {
+  const ok = await customConfirm('Clear Dismissed Alerts', 'Delete all read/dismissed alerts? This cannot be undone.', false);
+  if (!ok) return;
+  await fetch('/api/alerts/read', { method:'DELETE' });
+  fetchAlerts();
+  showToast('Dismissed alerts cleared', 'info');
+}
+
+function exportAlertsCSV() {
+  if (!_alerts.length) return showToast('No alerts to export', 'warning');
+  _downloadCSV(
+    [['Timestamp','Type','Item','Message','Read'],
+     ..._alerts.map(a => [a.timestamp, a.alert_type, a.item_name || '', a.message, a.is_read ? 'Yes' : 'No'])],
+    'alerts.csv'
+  );
+  showToast('Alerts exported as CSV', 'success');
 }
 
 function dismissBanner() {
@@ -649,18 +722,14 @@ function setupForms() {
 
   document.getElementById('form-tag-return').addEventListener('submit', async e => {
     e.preventDefault();
-    const uid  = document.getElementById('return-tag-uid').value;
-    const note = document.getElementById('return-note').value.trim() || 'Admin return';
-    const r    = await fetch(`/api/tags/${encodeURIComponent(uid)}/return`, {
+    const uid = document.getElementById('return-tag-uid').value;
+    const r   = await fetch(`/api/tags/${encodeURIComponent(uid)}/return`, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ note }),
+      body: JSON.stringify({}),
     });
     if (r.ok) {
       closeModal('modal-tag-return');
-      fetchTags();
-      fetchItems();
-      refreshSummary();
-      showToast('Tag returned to inventory', 'success');
+      showToast('Tag marked as return pending — scan to confirm', 'warning', 4000);
     } else {
       const d = await r.json();
       showToast('Error: ' + (d.error || 'Return failed'), 'error');
@@ -728,6 +797,11 @@ function connectSSE() {
       refreshSummary();
     }
 
+    if (data.type === 'return_pending') {
+      fetchTags();
+      showToast(`Tag ${data.tag_uid} marked return pending — scan to confirm`, 'warning', 4000);
+    }
+
     if (data.type === 'worker_auth') {
       showToast(`${data.name} authenticated at ${data.device_id}`, 'info', 2500);
       if (document.getElementById('tab-workers').classList.contains('active')) fetchWorkers();
@@ -759,6 +833,8 @@ function showBanner(msg, color = 'red') {
   banner.className = `${color === 'red' ? 'bg-red-500' : 'bg-amber-500'} text-white px-6 py-2.5 flex items-center justify-between text-sm`;
   text.textContent = msg;
   banner.classList.remove('hidden');
+  clearTimeout(banner._timer);
+  banner._timer = setTimeout(() => banner.classList.add('hidden'), 6000);
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

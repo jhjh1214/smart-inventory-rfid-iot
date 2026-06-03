@@ -342,9 +342,20 @@
     <!-- ── TAB: Alerts ─────────────────────────────────────────────────── -->
     <div id="tab-alerts" class="tab-content p-6 space-y-4">
       <div class="card">
-        <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h2 class="card-title">System Alerts</h2>
-          <button onclick="markAllRead()" class="btn-text">Mark all read</button>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button onclick="exportAlertsCSV()" class="btn-export">Export CSV</button>
+            <button onclick="clearReadAlerts()" class="btn-sm btn-sm-neutral">Clear dismissed</button>
+            <button onclick="markAllRead()" class="btn-text">Mark all read</button>
+          </div>
+        </div>
+        <div id="alert-filters" class="flex gap-2 mb-4 flex-wrap">
+          <button onclick="setAlertFilter('all')"          class="btn-sm btn-sm-edit"    data-filter="all">All</button>
+          <button onclick="setAlertFilter('unread')"       class="btn-sm btn-sm-neutral" data-filter="unread">Unread</button>
+          <button onclick="setAlertFilter('security')"     class="btn-sm btn-sm-neutral" data-filter="security">Security</button>
+          <button onclick="setAlertFilter('low_stock')"    class="btn-sm btn-sm-neutral" data-filter="low_stock">Low Stock</button>
+          <button onclick="setAlertFilter('out_of_stock')" class="btn-sm btn-sm-neutral" data-filter="out_of_stock">Out of Stock</button>
         </div>
         <ul id="alerts-list" class="divide-y divide-slate-100 max-h-[60vh] overflow-y-auto">
           <li class="py-6 text-slate-400 text-sm text-center">No alerts</li>
@@ -614,18 +625,13 @@
   <!-- Admin Tag Return -->
   <div id="modal-tag-return" class="modal-overlay hidden">
     <div class="modal-box">
-      <h3 class="text-lg font-semibold text-gray-800 mb-1">Admin: Return Tag to Inventory</h3>
-      <p class="text-sm text-slate-500 mb-4">This will reset the tag state to <em>out</em> and increment stock by 1.</p>
+      <h3 class="text-lg font-semibold text-gray-800 mb-1">Request Return</h3>
+      <p class="text-sm text-slate-500 mb-4">Tag will be marked <strong>Return Pending</strong>. Stock only updates once the physical tag is scanned at the reader.</p>
       <form id="form-tag-return" class="space-y-3">
         <input type="hidden" id="return-tag-uid" />
-        <div>
-          <label class="form-label">Return Reason / Note</label>
-          <textarea id="return-note" rows="3" placeholder="e.g. Customer return, damaged unit refund…"
-            class="form-input resize-none"></textarea>
-        </div>
         <div class="flex gap-2 pt-2">
           <button type="submit" class="flex-1 bg-amber-500 text-white py-2 rounded-lg hover:bg-amber-600 transition text-sm font-medium">
-            Confirm Return
+            Mark Return Pending
           </button>
           <button type="button" onclick="closeModal('modal-tag-return')" class="flex-1 btn-secondary">Cancel</button>
         </div>

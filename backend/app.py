@@ -304,6 +304,16 @@ def mark_all_read():
     return jsonify({'status': 'ok'})
 
 
+@app.route('/api/alerts/read', methods=['DELETE'])
+@login_required
+def delete_read_alerts():
+    conn = get_db()
+    conn.execute('DELETE FROM alerts WHERE is_read = 1')
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
 # ── Analytics ─────────────────────────────────────────────────────────────────
 
 @app.route('/api/analytics')
@@ -366,12 +376,9 @@ def register_tag():
 @app.route('/api/tags/<uid>/return', methods=['POST'])
 @admin_required
 def return_tag(uid):
-    data = request.get_json() or {}
-    note = data.get('note', 'Admin return')
-
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT t.*, i.name AS item_name, i.quantity FROM rfid_tags t JOIN items i ON t.item_id = i.id WHERE t.uid = ?', (uid,))
+    c.execute('SELECT t.*, i.name AS item_name FROM rfid_tags t JOIN items i ON t.item_id = i.id WHERE t.uid = ?', (uid,))
     tag = c.fetchone()
     if not tag:
         conn.close()
@@ -381,30 +388,18 @@ def return_tag(uid):
         conn.close()
         return jsonify({'error': f'Tag is in state "{tag["state"]}" — only dispatched/consumed tags can be returned'}), 400
 
-    prev_qty = tag['quantity']
-    new_qty  = prev_qty + 1
-
-    c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?', ('returned', uid))
-    c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (new_qty, tag['item_id']))
-    c.execute(
-        '''INSERT INTO transactions (item_id, action, quantity_change, previous_quantity,
-           new_quantity, tag_uid, performed_by, note)
-           VALUES (?, 'admin_return', 1, ?, ?, ?, ?, ?)''',
-        (tag['item_id'], prev_qty, new_qty, uid, session.get('username', 'admin'), note)
-    )
+    c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
+              ('return_pending', uid))
     conn.commit()
     conn.close()
 
     events.push({
-        'type':      'scan',
+        'type':      'return_pending',
         'item_id':   tag['item_id'],
         'item_name': tag['item_name'],
-        'action':    'admin_return',
-        'quantity':  new_qty,
         'tag_uid':   uid,
-        'tag_state': 'out',
     })
-    return jsonify({'status': 'ok', 'new_quantity': new_qty})
+    return jsonify({'status': 'ok'})
 
 
 @app.route('/api/tags/<uid>', methods=['DELETE'])

@@ -500,7 +500,7 @@ def _handle_legacy_scan(client, payload):
     else:
         current_state = row['state']
 
-    if current_state not in ('out', 'in', 'consumed'):
+    if current_state not in ('out', 'in', 'consumed', 'return_pending'):
         conn.close()
         return
 
@@ -513,6 +513,24 @@ def _handle_legacy_scan(client, payload):
         conn.close()
         events.push({'type': 'rejected_scan', 'tag_uid': tag_uid,
                      'item_id': item_id, 'item_name': item['name']})
+        return
+
+    if current_state == 'return_pending':
+        prev_qty = item['quantity']
+        new_qty  = prev_qty + 1
+        c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                  (new_qty, item_id))
+        c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
+                  ('returned', tag_uid))
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid)
+                   VALUES (?, 'return_confirmed', 1, ?, ?, ?)''',
+                  (item_id, prev_qty, new_qty, tag_uid))
+        conn.commit()
+        conn.close()
+        events.push({'type': 'scan', 'item_id': item_id, 'item_name': item['name'],
+                     'action': 'return_confirmed', 'quantity': new_qty,
+                     'tag_uid': tag_uid, 'tag_state': 'returned'})
         return
 
     prev_qty = item['quantity']

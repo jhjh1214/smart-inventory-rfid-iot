@@ -376,9 +376,14 @@ def register_tag():
 @app.route('/api/tags/<uid>/return', methods=['POST'])
 @admin_required
 def return_tag(uid):
+    data = request.get_json() or {}
+    note = data.get('note', 'Admin return request')
+
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT t.*, i.name AS item_name FROM rfid_tags t JOIN items i ON t.item_id = i.id WHERE t.uid = ?', (uid,))
+    c.execute('''SELECT t.*, i.name AS item_name, i.quantity
+                 FROM rfid_tags t JOIN items i ON t.item_id = i.id
+                 WHERE t.uid = ?''', (uid,))
     tag = c.fetchone()
     if not tag:
         conn.close()
@@ -390,6 +395,11 @@ def return_tag(uid):
 
     c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
               ('return_pending', uid))
+    c.execute('''INSERT INTO transactions
+               (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, performed_by, note)
+               VALUES (?, 'return_requested', 0, ?, ?, ?, ?, ?)''',
+              (tag['item_id'], tag['quantity'], tag['quantity'],
+               uid, session.get('username', 'admin'), note))
     conn.commit()
     conn.close()
 

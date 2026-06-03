@@ -457,17 +457,20 @@ def _handle_return_gate(client, payload):
         return
 
     state = tag['state']
-    if state in ('dispatched', 'consumed'):
+    if state in ('dispatched', 'consumed', 'return_pending'):
         prev    = tag['quantity']
         new_qty = prev + 1
+        action  = 'return_confirmed' if state == 'return_pending' else 'customer_return'
+        note    = ('Return confirmed via physical scan'
+                   if state == 'return_pending' else 'Customer return via return gate')
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('returned', tag_uid))
         c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                   (new_qty, tag['item_id']))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note)
-                   VALUES (?, 'customer_return', 1, ?, ?, ?, ?)''',
-                  (tag['item_id'], prev, new_qty, tag_uid, 'Customer return via return gate'))
+                   VALUES (?, ?, 1, ?, ?, ?, ?)''',
+                  (tag['item_id'], action, prev, new_qty, tag_uid, note))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
@@ -476,7 +479,7 @@ def _handle_return_gate(client, payload):
                      'tag_uid': tag_uid, 'item_id': tag['item_id'],
                      'item_name': tag['item_name'], 'quantity': new_qty})
     else:
-        print(f'[MQTT] return_gate: {tag_uid} state={state}, not dispatched — ignore')
+        print(f'[MQTT] return_gate: {tag_uid} state={state}, not returnable — ignore')
         conn.close()
 
 
@@ -523,9 +526,10 @@ def _handle_legacy_scan(client, payload):
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('returned', tag_uid))
         c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid)
-                   VALUES (?, 'return_confirmed', 1, ?, ?, ?)''',
-                  (item_id, prev_qty, new_qty, tag_uid))
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note)
+                   VALUES (?, 'return_confirmed', 1, ?, ?, ?, ?)''',
+                  (item_id, prev_qty, new_qty, tag_uid, 'Return confirmed via physical scan'))
+        _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
         events.push({'type': 'scan', 'item_id': item_id, 'item_name': item['name'],

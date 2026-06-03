@@ -128,6 +128,7 @@ function actionBadge(action) {
     scan_out:           'badge-info',
     manual_adjust:      'badge-neutral',
     admin_return:       'badge-purple',
+    return_requested:   'badge-warning',
     return_confirmed:   'badge-orange',
     tag_write:          'badge-info',
     factory_exit:       'badge-warning',

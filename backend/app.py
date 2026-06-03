@@ -11,6 +11,7 @@ from analytics import (get_all_analytics, get_item_analytics,
                         get_inventory_summary, get_pipeline_summary)
 from mqtt_subscriber import (start_mqtt, get_status as mqtt_status,
                               publish as mqtt_publish,
+                              get_active_sessions,
                               TOPIC_FACTORY_JOB)
 import events
 
@@ -27,6 +28,18 @@ def login_required(f):
             if request.path.startswith('/api/'):
                 return jsonify({'error': 'Unauthorized'}), 401
             return redirect(url_for('login_page'))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def manager_required(f):
+    """Requires admin or manager role."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        if session.get('role') not in ('admin', 'manager'):
+            return jsonify({'error': 'Manager access required'}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -168,7 +181,7 @@ def get_items():
 
 
 @app.route('/api/items', methods=['POST'])
-@login_required
+@manager_required
 def add_item():
     data = request.get_json()
     conn = get_db()
@@ -450,6 +463,85 @@ def change_password(user_id):
     return jsonify({'status': 'ok'})
 
 
+# ── Workers ───────────────────────────────────────────────────────────────────
+
+@app.route('/api/workers', methods=['GET'])
+@login_required
+def get_workers():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM workers ORDER BY name')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    sessions = get_active_sessions()
+    for w in rows:
+        for did, sess in sessions.items():
+            if sess['employee_id'] == w['employee_id']:
+                w['active_station'] = did
+                w['session_expires_in'] = sess['expires_in']
+                break
+        else:
+            w['active_station'] = None
+            w['session_expires_in'] = None
+    return jsonify(rows)
+
+
+@app.route('/api/workers', methods=['POST'])
+@manager_required
+def create_worker():
+    data = request.get_json() or {}
+    employee_id = data.get('employee_id', '').upper().strip()
+    name        = data.get('name', '').strip()
+    role        = data.get('role', 'operator')
+    if not employee_id or not name:
+        return jsonify({'error': 'employee_id and name required'}), 400
+    if not employee_id.startswith('EMP-'):
+        return jsonify({'error': 'employee_id must start with EMP-'}), 400
+    conn = get_db()
+    try:
+        conn.execute('INSERT INTO workers (employee_id, name, role) VALUES (?, ?, ?)',
+                     (employee_id, name, role))
+        conn.commit()
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 400
+    conn.close()
+    return jsonify({'status': 'ok'}), 201
+
+
+@app.route('/api/workers/<int:worker_id>', methods=['PUT'])
+@manager_required
+def update_worker(worker_id):
+    data = request.get_json() or {}
+    allowed = ['name', 'role', 'active']
+    fields  = [f for f in allowed if f in data]
+    if not fields:
+        return jsonify({'error': 'Nothing to update'}), 400
+    set_clause = ', '.join(f'{f} = ?' for f in fields)
+    values     = [data[f] for f in fields] + [worker_id]
+    conn = get_db()
+    conn.execute(f'UPDATE workers SET {set_clause} WHERE id = ?', values)
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/workers/<int:worker_id>', methods=['DELETE'])
+@admin_required
+def delete_worker(worker_id):
+    conn = get_db()
+    conn.execute('DELETE FROM workers WHERE id = ?', (worker_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/workers/sessions')
+@login_required
+def worker_sessions():
+    return jsonify(get_active_sessions())
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 @app.route('/api/pipeline')
@@ -476,7 +568,7 @@ def get_write_jobs():
 
 
 @app.route('/api/factory/jobs', methods=['POST'])
-@admin_required
+@manager_required
 def create_write_job():
     from datetime import datetime as dt
     data     = request.get_json() or {}

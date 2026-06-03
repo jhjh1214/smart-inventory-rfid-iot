@@ -49,6 +49,13 @@
         </svg>
         <span>RFID Tags</span>
       </button>
+      <button class="nav-item" data-tab="workers" id="nav-workers">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        <span>Workers</span>
+      </button>
       <button class="nav-item" data-tab="manufacturing">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -306,6 +313,92 @@
           <li class="py-6 text-slate-400 text-sm text-center">No alerts</li>
         </ul>
       </div>
+    </div>
+
+    <!-- ── TAB: Workers ───────────────────────────────────────────────── -->
+    <div id="tab-workers" class="tab-content p-6 space-y-6">
+
+      <!-- Active sessions -->
+      <div class="card">
+        <h2 class="card-title mb-3">Currently Active at Stations</h2>
+        <div id="worker-sessions" class="flex flex-wrap gap-3">
+          <span class="text-slate-400 text-sm">No workers authenticated at any station</span>
+        </div>
+        <p class="text-xs text-slate-400 mt-3">Workers tap their RFID badge at any station reader to authenticate. Session expires after 5 minutes of inactivity.</p>
+      </div>
+
+      <!-- Register new worker (manager+) -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="card" id="worker-register-card">
+          <h2 class="card-title mb-4">Register New Worker</h2>
+          <form id="form-add-worker" class="space-y-3">
+            <div>
+              <label class="form-label">Employee ID</label>
+              <input id="w-employee-id" type="text" placeholder="EMP-005"
+                class="form-input uppercase" required />
+            </div>
+            <div>
+              <label class="form-label">Full Name</label>
+              <input id="w-name" type="text" placeholder="Full name" class="form-input" required />
+            </div>
+            <div>
+              <label class="form-label">Role</label>
+              <select id="w-role" class="form-input">
+                <option value="operator">Operator</option>
+                <option value="supervisor">Supervisor</option>
+              </select>
+            </div>
+            <button type="submit" class="w-full btn-primary">Register Worker</button>
+          </form>
+          <p class="text-xs text-slate-400 mt-3">After registration, write the Employee ID to an RFID tag using <code>tag_writer.py</code>.</p>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title mb-2">Role Access Summary</h2>
+          <div class="space-y-2 text-sm">
+            <div class="flex items-start gap-2">
+              <span class="badge badge-danger mt-0.5">admin</span>
+              <span class="text-slate-600">Full system access — user management, delete operations, admin returns, all settings</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="badge badge-warning mt-0.5">manager</span>
+              <span class="text-slate-600">Operational access — create inventory, write jobs, view workers, edit items (no user/system management)</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="badge badge-neutral mt-0.5">viewer</span>
+              <span class="text-slate-600">Read-only — overview, inventory view, alerts view only</span>
+            </div>
+            <div class="border-t pt-2 mt-2">
+              <div class="text-slate-500 font-medium text-xs uppercase mb-1">Worker (physical badge)</div>
+              <div class="flex items-start gap-2"><span class="badge badge-purple">supervisor</span><span class="text-slate-600">Can operate return gate + all stations</span></div>
+              <div class="flex items-start gap-2 mt-1"><span class="badge badge-info">operator</span><span class="text-slate-600">Factory + warehouse gate/rack stations</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Worker list -->
+      <div class="card">
+        <h2 class="card-title mb-3">All Workers</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="table-head">
+              <tr>
+                <th class="th text-left">Employee</th>
+                <th class="th text-center">Role</th>
+                <th class="th text-left">Badge UID</th>
+                <th class="th text-center">Status</th>
+                <th class="th text-center">Last Active</th>
+                <th class="th text-center" id="worker-actions-header">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="workers-tbody">
+              <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
 
     <!-- ── TAB: Manufacturing ──────────────────────────────────────────── -->

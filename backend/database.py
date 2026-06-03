@@ -67,6 +67,17 @@ def init_db():
             created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS workers (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id TEXT UNIQUE NOT NULL,
+            name        TEXT NOT NULL DEFAULT 'Unknown',
+            uid         TEXT UNIQUE,
+            role        TEXT DEFAULT 'operator',
+            active      INTEGER DEFAULT 1,
+            last_seen   TIMESTAMP,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS write_jobs (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             batch_id     TEXT UNIQUE NOT NULL,
@@ -112,15 +123,39 @@ def init_db():
             demo_items
         )
 
-    # ── Seed default admin on fresh database ─────────────────────────────────
+    # ── Seed default admin and manager on fresh database ────────────────────
     c.execute('SELECT COUNT(*) FROM users')
     if c.fetchone()[0] == 0:
-        c.execute(
-            'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-            ('admin', generate_password_hash('admin123'), 'admin')
+        from werkzeug.security import generate_password_hash as _h
+        c.executemany('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', [
+            ('admin',   _h('admin123'),   'admin'),
+            ('manager', _h('manager123'), 'manager'),
+            ('viewer',  _h('viewer123'),  'viewer'),
+        ])
+        print('[DB] Default users: admin/admin123  manager/manager123  viewer/viewer123')
+
+    # ── Ensure manager + viewer demo accounts exist ──────────────────────────
+    for username, plain, role in [('manager', 'manager123', 'manager'),
+                                   ('viewer',  'viewer123',  'viewer')]:
+        c.execute('SELECT id FROM users WHERE username = ?', (username,))
+        if not c.fetchone():
+            c.execute('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
+                      (username, generate_password_hash(plain), role))
+
+    # ── Seed demo workers ────────────────────────────────────────────────────
+    c.execute('SELECT COUNT(*) FROM workers')
+    if c.fetchone()[0] == 0:
+        demo_workers = [
+            ('EMP-001', 'Alice Tan',   'supervisor'),
+            ('EMP-002', 'Bob Lim',     'operator'),
+            ('EMP-003', 'Carol Wong',  'operator'),
+            ('EMP-004', 'David Ng',    'operator'),
+        ]
+        c.executemany(
+            'INSERT INTO workers (employee_id, name, role) VALUES (?, ?, ?)',
+            demo_workers
         )
-        print('[DB] Default admin created — username: admin  password: admin123')
-        print('[DB] Change password after first login!')
+        print('[DB] Demo workers seeded — write EMP-001..EMP-004 to RFID badges via tag_writer')
 
     conn.commit()
     conn.close()

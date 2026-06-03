@@ -18,6 +18,7 @@ let abcData = {};
     return;
   }
 
+  applyRBAC(currentRole);
   setupTabs();
   setupForms();
   clockTick();
@@ -97,7 +98,7 @@ function clockTick() {
 function setupTabs() {
   const titles = {
     overview:'Overview', inventory:'Inventory', analytics:'Analytics',
-    tags:'RFID Tags', manufacturing:'Manufacturing', alerts:'Alerts'
+    tags:'RFID Tags', workers:'Workers', manufacturing:'Manufacturing', alerts:'Alerts'
   };
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -113,6 +114,7 @@ function setupTabs() {
       if (tab === 'analytics') fetchAnalytics();
       if (tab === 'tags')      fetchTags();
       if (tab === 'alerts')         fetchAlerts();
+      if (tab === 'workers')        fetchWorkers();
       if (tab === 'manufacturing')  fetchPipeline();
     });
   });
@@ -661,6 +663,21 @@ function connectSSE() {
       refreshSummary();
     }
 
+    if (data.type === 'worker_auth') {
+      if (document.getElementById('tab-workers').classList.contains('active')) {
+        fetchWorkers();
+      }
+      // Flash a subtle notice in the topbar
+      const lb = document.getElementById('scan-live-badge');
+      lb.classList.remove('hidden');
+      clearTimeout(lb._timer2);
+      lb._timer2 = setTimeout(() => lb.classList.add('hidden'), 2000);
+    }
+
+    if (data.type === 'worker_denied') {
+      showBanner(`Access denied: worker ${data.employee_id} (${data.name}) is inactive`, 'red');
+    }
+
     if (data.type === 'job_created') {
       if (document.getElementById('tab-manufacturing').classList.contains('active')) {
         fetchPipeline();
@@ -694,6 +711,145 @@ async function doLogout() {
   await fetch('/api/logout', { method: 'POST' });
   window.location.href = '/login';
 }
+
+// ── RBAC visibility ───────────────────────────────────────────────────────────
+
+function applyRBAC(role) {
+  const isAdmin   = role === 'admin';
+  const isManager = role === 'admin' || role === 'manager';
+
+  // Tabs hidden from viewers
+  ['nav-workers'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = isManager ? '' : 'none';
+  });
+  // Manufacturing tab visible to managers+
+  document.querySelectorAll('[data-tab="manufacturing"]').forEach(el => {
+    el.style.display = isManager ? '' : 'none';
+  });
+  // Analytics tab visible to managers+
+  document.querySelectorAll('[data-tab="analytics"]').forEach(el => {
+    el.style.display = isManager ? '' : 'none';
+  });
+}
+
+
+// ── Workers tab ───────────────────────────────────────────────────────────────
+
+async function fetchWorkers() {
+  try {
+    const [workers, sessions] = await Promise.all([
+      fetch('/api/workers').then(r => r.json()),
+      fetch('/api/workers/sessions').then(r => r.json()),
+    ]);
+    renderWorkerSessions(sessions);
+    renderWorkerTable(workers);
+  } catch {}
+}
+
+function renderWorkerSessions(sessions) {
+  const el = document.getElementById('worker-sessions');
+  if (!el) return;
+  const entries = Object.entries(sessions);
+  if (!entries.length) {
+    el.innerHTML = '<span class="text-slate-400 text-sm">No workers authenticated at any station</span>';
+    return;
+  }
+  el.innerHTML = entries.map(([did, s]) => `
+    <div class="flex items-center gap-3 bg-green-50 border border-green-200 rounded-lg px-4 py-3">
+      <div class="w-2 h-2 rounded-full bg-green-500 shrink-0"></div>
+      <div>
+        <div class="font-semibold text-sm text-green-800">${esc(s.name)}</div>
+        <div class="text-xs text-green-600">${esc(s.employee_id)} · ${esc(did)}</div>
+        <div class="text-xs text-green-500">expires in ${s.expires_in}s</div>
+      </div>
+      <span class="badge badge-purple ml-2">${esc(s.role)}</span>
+    </div>`).join('');
+}
+
+function renderWorkerTable(workers) {
+  const tbody = document.getElementById('workers-tbody');
+  if (!tbody) return;
+  const isManager = currentRole === 'admin' || currentRole === 'manager';
+  if (!workers.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No workers registered</td></tr>';
+    return;
+  }
+  const roleBadge = r => {
+    const map = { supervisor:'badge-purple', operator:'badge-info' };
+    return `<span class="badge ${map[r] || 'badge-neutral'}">${esc(r)}</span>`;
+  };
+  tbody.innerHTML = workers.map(w => {
+    const activeChip = w.active_station
+      ? `<span class="badge badge-success">Active @ ${esc(w.active_station)}</span>`
+      : '';
+    const actions = isManager
+      ? `<button onclick="toggleWorker(${w.id}, ${w.active})"
+           class="text-xs ${w.active ? 'text-red-500' : 'text-green-600'} hover:underline mr-2">
+           ${w.active ? 'Deactivate' : 'Activate'}</button>
+         ${currentRole === 'admin' ? `<button onclick="deleteWorker(${w.id})" class="text-xs text-red-500 hover:underline">Delete</button>` : ''}`
+      : '—';
+    return `
+      <tr>
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-800">${esc(w.name)}</div>
+          <div class="text-xs text-gray-400">${esc(w.employee_id)}</div>
+        </td>
+        <td class="px-4 py-3 text-center">${roleBadge(w.role)}</td>
+        <td class="px-4 py-3 font-mono text-xs text-gray-500">${esc(w.uid) || '<span class="text-gray-300">not yet scanned</span>'}</td>
+        <td class="px-4 py-3 text-center">
+          ${w.active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-neutral">Inactive</span>'}
+          ${activeChip}
+        </td>
+        <td class="px-4 py-3 text-center text-xs text-gray-400">${fmtDate(w.last_seen)}</td>
+        <td class="px-4 py-3 text-center">${actions}</td>
+      </tr>`;
+  }).join('');
+}
+
+async function toggleWorker(id, currentActive) {
+  await fetch(`/api/workers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active: currentActive ? 0 : 1 }),
+  });
+  fetchWorkers();
+}
+
+async function deleteWorker(id) {
+  if (!confirm('Delete this worker record?')) return;
+  await fetch(`/api/workers/${id}`, { method: 'DELETE' });
+  fetchWorkers();
+}
+
+// Worker registration form
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-add-worker');
+  if (form) {
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const employee_id = document.getElementById('w-employee-id').value.trim().toUpperCase();
+      const name        = document.getElementById('w-name').value.trim();
+      const role        = document.getElementById('w-role').value;
+      const r = await fetch('/api/workers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employee_id, name, role }),
+      });
+      const d = await r.json();
+      if (r.ok) { form.reset(); fetchWorkers(); }
+      else alert('Error: ' + (d.error || 'Failed'));
+    });
+  }
+});
+
+// Update worker session display every 30s if tab is open
+setInterval(() => {
+  if (document.getElementById('tab-workers').classList.contains('active')) {
+    fetch('/api/workers/sessions').then(r => r.json()).then(renderWorkerSessions).catch(() => {});
+  }
+}, 30000);
+
 
 // ── Pipeline / Manufacturing tab ──────────────────────────────────────────────
 

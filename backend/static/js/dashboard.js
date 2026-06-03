@@ -27,6 +27,13 @@ let _transactions = [];
 
   applyRBAC(currentRole);
   setupTabs();
+
+  const savedTab = localStorage.getItem('activeTab');
+  if (savedTab) {
+    const savedBtn = document.querySelector(`.nav-item[data-tab="${savedTab}"]`);
+    if (savedBtn && savedBtn.style.display !== 'none') savedBtn.click();
+  }
+
   setupForms();
   clockTick();
   setInterval(clockTick, 1000);
@@ -168,6 +175,7 @@ function setupTabs() {
       btn.classList.add('active');
       document.getElementById(`tab-${tab}`).classList.add('active');
       document.getElementById('page-title').textContent = titles[tab] || tab;
+      localStorage.setItem('activeTab', tab);
 
       if (tab === 'inventory')     fetchItems();
       if (tab === 'analytics')     fetchAnalytics();
@@ -697,6 +705,7 @@ function connectSSE() {
       refreshSummary();
       fetchTransactions();
       fetchItems().then(() => highlightItem(data.item_id));
+      fetchTags();
       if (data.type === 'rejected_scan') {
         showBanner(`SECURITY: Consumed tag ${data.tag_uid} scanned for ${data.item_name} — possible reuse`);
         fetchAlerts();

@@ -1,8 +1,8 @@
 # Smart Inventory Management System — RFID & IoT
 
-**Thesis Project — TAI KE YING DOROTHY**
+**Final Year Project — TAI KE YING DOROTHY**
 
-A full-stack, industrial-grade inventory management system built around RFID tags, ESP32 microcontrollers, MQTT messaging, and a real-time web dashboard. Products are tagged at the manufacturing line and tracked automatically through every stage — factory floor, warehouse gate, shelf placement, dispatch, and customer returns — with a complete audit trail of who handled what and when.
+A full-stack, industrial-grade inventory management system built around RFID tags, ESP32 microcontrollers, MQTT messaging, and a real-time web dashboard. Products are tagged at the manufacturing line and tracked automatically through every stage — factory floor, warehouse gate, shelf placement, dispatch, and customer returns — with a complete, tamper-evident audit trail of who handled what, where, and when.
 
 ---
 
@@ -20,7 +20,7 @@ A full-stack, industrial-grade inventory management system built around RFID tag
 └────────────────────────────┴─────────────────────────┴───────────┘
               │                        │                      │
               └──────────── MQTT (Mosquitto) ─────────────────┘
-                                       │
+                                       │ LAN  (port 1883)
                             ┌──────────▼──────────┐
                             │   Flask Backend      │
                             │   (Python + SQLite)  │
@@ -31,8 +31,20 @@ A full-stack, industrial-grade inventory management system built around RFID tag
                             ┌──────────▼──────────┐
                             │   Web Dashboard      │
                             │   Tailwind + Chart.js│
+                            │   http://server:5000 │
                             └─────────────────────┘
 ```
+
+### On-Premise Deployment
+
+This system is designed to run **entirely on a local company network** — no cloud, no public URL required. The recommended setup:
+
+- A mini-PC (or Raspberry Pi 4) runs Mosquitto + Flask + SQLite on the LAN.
+- All ESP32 boards connect to the same Wi-Fi network and publish to the LAN broker.
+- Dashboard staff access `http://inventory.company.local` via an internal DNS A record.
+- Remote management can be added via VPN (no port forwarding to the public internet).
+
+This makes the system a plug-in module for an existing ERP environment — selling hardware plus software as a single unit, self-contained.
 
 ---
 
@@ -45,7 +57,7 @@ A full-stack, industrial-grade inventory management system built around RFID tag
 | 3 | ESP32 Dev Board | RFID pipeline nodes |
 | 5 | RC522 RFID Reader (MFRC522) | One per station |
 | N | MIFARE Classic 1K tags | Product stickers + worker badges |
-| 1 | PC / Raspberry Pi | Flask server + Mosquitto broker |
+| 1 | Mini-PC / Raspberry Pi 4 | Flask server + Mosquitto broker |
 
 ### ESP32 Pin Wiring (all boards identical except CS pins)
 
@@ -116,7 +128,13 @@ Every RFID tag follows a strict one-way state machine. Once dispatched, a tag ca
                                               │  (cycle repeats)
 ```
 
-**Security:** Any tag in `dispatched` or `consumed` state that is re-scanned at a gate triggers a **security alert** in the dashboard and an MQTT alert message.
+**Legacy mode** (single-reader `inventory/scan` topic):
+
+```
+out → in → consumed → return_pending → in → ...
+```
+
+**Security:** Any tag in `dispatched` or `consumed` state that is re-scanned at a gate triggers a **security alert** in the dashboard and an MQTT alert broadcast.
 
 ---
 
@@ -124,12 +142,16 @@ Every RFID tag follows a strict one-way state machine. Once dispatched, a tag ca
 
 Workers carry RFID badge tags (written with their employee ID, e.g. `EMP-001`). When a worker taps their badge on any station reader, the backend:
 
-1. Detects the `EMP-` prefix and routes to the worker auth handler (not the product pipeline)
-2. Creates a **5-minute session** on that device
-3. All product transactions from that device during the session record `performed_by = "Alice Tan (EMP-001)"`
-4. Session expiry or badge re-tap renews the timer
+1. Detects the `EMP-` prefix and routes to the worker auth handler (not the product pipeline).
+2. Creates a **5-minute session** on that device.
+3. All product transactions from that device during the session record `performed_by = "Alice Tan (EMP-001)"`.
+4. Session expiry or badge re-tap renews the timer.
 
-This gives a full, tamper-evident audit trail of who handled each item at every stage.
+**Supervisor dispatch enforcement:** Warehouse dispatch (goods leaving) requires an active supervisor session on the gate device. If no supervisor is authenticated, an alert is raised in the dashboard with timestamp and device ID. The dispatch still proceeds physically to avoid deadlocking warehouse operations, but the event is flagged for investigation.
+
+### Worker Zones
+
+Workers can be assigned a `zone` (e.g., `warehouse`, `factory`, `returns`) to scope their access geographically within the facility.
 
 ### Pre-seeded Workers
 
@@ -144,6 +166,39 @@ Write these to physical RFID tags using `tag_writer.py` (see Setup below).
 
 ---
 
+## Accountability & Audit Trail
+
+Every transaction in the system — whether from a physical scanner or a dashboard action — records **who** did it, **where**, and **what device** was involved.
+
+### device_id Column
+
+All `transactions` rows carry a `device_id` field:
+
+| Value | Meaning |
+|-------|---------|
+| `'dashboard'` | Action performed through the web UI |
+| `'esp32-factory'` | Physical scan at manufacturing ESP32 |
+| `'esp32-warehouse'` | Physical scan at warehouse ESP32 |
+| `'esp32-returns'` | Physical scan at returns desk |
+| `'system'` | Auto-generated by migration / seeding |
+
+### Dashboard Actor Tracking
+
+Dashboard-triggered transactions record the logged-in username. If the account has a linked RFID badge (via `badge_uid`), the record shows `"alice [badge:A1B2C3D4]"`, tying the digital action to a physical badge holder.
+
+### Audit Trail Tab
+
+The dashboard Audit Trail tab is visible to **all roles** (viewer, manager, admin). No administrator can hide their own actions. Filters available:
+
+- **All** — full transaction log
+- **Dashboard Actions** — web UI actions only (`device_id = 'dashboard'`)
+- **Physical Scans** — ESP32 scanner actions only
+- **Admin Actions** — item adds, deletes, manual adjustments
+
+The log can be exported as CSV.
+
+---
+
 ## Dashboard
 
 Access at `http://<server>:5000` — login required.
@@ -152,21 +207,30 @@ Access at `http://<server>:5000` — login required.
 
 | Tab | Contents |
 |-----|----------|
-| **Overview** | KPI cards (total items, qty, low stock, alerts), live transaction feed, recent alerts |
-| **Inventory** | Full item table, add / edit / delete, manual quantity adjustment |
+| **Overview** | KPI cards (total items, total quantity, low stock count, active alerts), live transaction feed, recent alerts |
+| **Inventory** | Full item table with search, add / edit / delete items, manual quantity adjustment |
 | **Analytics** | Transaction trends (7-day bar chart), ABC classification, inventory health score, demand forecast, EOQ, risk scores |
 | **RFID Tags** | All registered tags with UID, current state, rack location, last scan time |
-| **Workers** | Active station sessions (live), register/edit workers, badge UID association |
+| **Workers** | Active station sessions (live), register / edit workers with zone and badge UID |
 | **Manufacturing** | Pipeline stage counts, per-item stage breakdown, rack utilisation, write job queue |
-| **Alerts** | Security alerts, low stock and out-of-stock notifications |
+| **Alerts** | Security alerts, low stock and out-of-stock notifications, filterable |
+| **Audit Trail** | Full tamper-evident transaction log with device, actor, and note columns |
 
 ### Role-Based Access Control
 
 | Role | Access |
 |------|--------|
-| `admin` | All tabs + user management + delete items/tags/workers |
+| `admin` | All tabs + user account management + delete items/tags/workers |
 | `manager` | All tabs + add/edit items + create write jobs + manage workers |
-| `viewer` | Overview, Inventory (read-only), Alerts only |
+| `viewer` | Overview, Inventory (read-only), Alerts, Audit Trail (read-only) |
+
+### Dashboard Account Management (Admin)
+
+Admins can create, edit, and delete dashboard login accounts from within the interface:
+
+- Assign role (`admin`, `manager`, `viewer`)
+- Link account to a physical RFID badge (`badge_uid`) for hardware-tied identity
+- Link to an internal employee record (`employee_id`)
 
 ### Default Accounts
 
@@ -195,6 +259,8 @@ Access at `http://<server>:5000` — login required.
 
 ## MQTT Topics
 
+All ESP32 payloads include a `device_id` field identifying the originating board.
+
 | Topic | Direction | Purpose |
 |-------|-----------|---------|
 | `inventory/factory/job` | backend → ESP32 | Dispatch a write job to factory_writer |
@@ -206,6 +272,16 @@ Access at `http://<server>:5000` — login required.
 | `inventory/alert` | backend → all | Low stock / security alert broadcast |
 | `inventory/status` | ESP32 → backend | Heartbeat (every 30 s) |
 | `inventory/scan` | ESP32 → backend | Legacy single-reader compat |
+
+### Payload Format (ESP32 → backend)
+
+```json
+{
+  "device_id": "esp32-warehouse",
+  "tag_uid": "A1B2C3D4",
+  "timestamp": 1720000000
+}
+```
 
 ---
 
@@ -222,10 +298,10 @@ smart-inventory-rfid-iot/
 │   ├── events.py               # SSE event bus (thread-safe queue per client)
 │   ├── templates/
 │   │   ├── login.html          # Login page
-│   │   └── dashboard.html      # Main dashboard (sidebar + 7 tabs)
+│   │   └── dashboard.html      # Main dashboard (sidebar + 8 tabs)
 │   └── static/
-│       ├── css/style.css       # Sidebar layout, cards, badges, animations
-│       └── js/dashboard.js     # Tab logic, Chart.js charts, SSE handler, RBAC
+│       ├── css/style.css       # GitHub-style sidebar, skeleton loaders, toasts, modals
+│       └── js/dashboard.js     # Tab logic, Chart.js, SSE handler, RBAC, audit/user mgmt
 │
 └── esp32/
     ├── config.py               # Per-board config: DEVICE_ID, READERS list, WiFi, MQTT
@@ -246,32 +322,45 @@ smart-inventory-rfid-iot/
 | GET | `/login` | — | Login page |
 | POST | `/api/login` | — | Authenticate, returns role |
 | POST | `/api/logout` | any | End session |
-| GET | `/api/me` | any | Current user info |
+| GET | `/api/me` | any | Current user info (includes badge_uid, employee_id) |
 
 ### Items
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | GET | `/api/items` | viewer+ | List all items |
-| POST | `/api/items` | manager+ | Create item |
-| PUT | `/api/items/<id>` | viewer+ | Update item (quantity logs a transaction) |
-| DELETE | `/api/items/<id>` | admin | Delete item and its tags |
+| POST | `/api/items` | manager+ | Create item (logs `item_added` transaction) |
+| PUT | `/api/items/<id>` | viewer+ | Update item (quantity change logs `manual_adjust`) |
+| DELETE | `/api/items/<id>` | admin | Delete item and its tags (logs `item_deleted`) |
 
 ### RFID Tags
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | GET | `/api/tags` | viewer+ | All tags with state and rack location |
 | POST | `/api/tags` | any | Register tag manually |
-| POST | `/api/tags/<uid>/return` | admin | Admin force-return (dispatched/consumed → returned) |
-| DELETE | `/api/tags/<uid>` | admin | Delete tag record |
+| POST | `/api/tags/<uid>/return` | admin | Admin force-return (dispatched → returned) |
+| DELETE | `/api/tags/<uid>` | admin | Delete tag record (logs `tag_removed`) |
 
 ### Workers
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | GET | `/api/workers` | viewer+ | All workers + active station sessions |
 | POST | `/api/workers` | manager+ | Register worker |
-| PUT | `/api/workers/<id>` | manager+ | Update name/role/active |
+| PUT | `/api/workers/<id>` | manager+ | Update name/role/zone/active |
 | DELETE | `/api/workers/<id>` | admin | Delete worker |
 | GET | `/api/workers/sessions` | any | Currently authenticated stations |
+
+### Users (Dashboard Accounts)
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/users` | admin | List all dashboard accounts |
+| POST | `/api/users` | admin | Create account |
+| PUT | `/api/users/<id>` | admin | Update role / badge_uid / employee_id |
+| DELETE | `/api/users/<id>` | admin | Delete account (cannot delete own) |
+
+### Audit Trail
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/audit` | viewer+ | Transaction log; `?filter=dashboard\|physical\|admin&limit=N` |
 
 ### Manufacturing
 | Method | Endpoint | Auth | Description |
@@ -290,6 +379,40 @@ smart-inventory-rfid-iot/
 
 ---
 
+## Database Schema
+
+| Table | Key Columns | Purpose |
+|-------|-------------|---------|
+| `items` | id, name, quantity, unit, low_stock_threshold | Product catalogue |
+| `rfid_tags` | uid, item_id, state, rack_location, last_scan | Tag registry with pipeline state |
+| `transactions` | action, quantity_change, tag_uid, performed_by, **device_id**, note, timestamp | Full audit log |
+| `alerts` | item_id, alert_type, message, acknowledged | Low stock + security events |
+| `users` | username, password_hash, role, **badge_uid**, **employee_id** | Dashboard login accounts |
+| `workers` | employee_id, name, uid, role, **zone**, active, last_seen | Worker registry |
+| `write_jobs` | batch_id, item_id, quantity, written, status | Factory write job queue |
+
+**Bold** = columns added in the accountability refactor.
+
+### Transaction `action` Values
+
+| Action | Trigger |
+|--------|---------|
+| `scan_in` | Legacy reader — item received |
+| `scan_out` | Legacy reader — item dispatched |
+| `tagged` | factory_writer — new tag written |
+| `in_transit` | factory_exit — product left factory |
+| `received` | warehouse_gate — product arrived |
+| `racked` | warehouse_rack — shelf confirmed |
+| `dispatched` | warehouse_gate — product sent out |
+| `returned` | return_gate — customer return |
+| `item_added` | Dashboard — new item created |
+| `item_deleted` | Dashboard — item deleted |
+| `tag_removed` | Dashboard — tag deregistered |
+| `return_requested` | Dashboard — admin force-return |
+| `manual_adjust` | Dashboard — quantity edited |
+
+---
+
 ## Setup
 
 ### 1. Backend
@@ -300,16 +423,52 @@ smart-inventory-rfid-iot/
 pip install flask werkzeug paho-mqtt
 ```
 
-Start Mosquitto on the server (default port 1883), then:
+Start Mosquitto on the LAN server (default port 1883), then:
 
 ```bash
 cd backend
 python app.py
 ```
 
-The database (`inventory.db`) is created automatically on first run with demo items and default user accounts.
+The database (`inventory.db`) is created automatically on first run with demo items and default accounts.
 
-Update the broker IP in `backend/mqtt_subscriber.py` line 31 if not using `192.168.0.115`.
+Update the broker IP in `backend/mqtt_subscriber.py` if not using `192.168.0.115`.
+
+#### Production Deployment (Linux)
+
+For a persistent on-premise service, use gunicorn + systemd:
+
+```bash
+pip install gunicorn
+```
+
+`/etc/systemd/system/inventory.service`:
+
+```ini
+[Unit]
+Description=Smart Inventory Backend
+After=network.target mosquitto.service
+
+[Service]
+User=inventory
+WorkingDirectory=/opt/smart-inventory-rfid-iot/backend
+ExecStart=/usr/local/bin/gunicorn -w 2 -b 0.0.0.0:5000 app:app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable inventory
+sudo systemctl start inventory
+```
+
+Set an internal DNS A record:
+
+```
+inventory.company.local  →  <server LAN IP>
+```
 
 ### 2. ESP32 Firmware
 
@@ -320,6 +479,11 @@ Update the broker IP in `backend/mqtt_subscriber.py` line 31 if not using `192.1
 ```python
 # ESP32 #1 — Manufacturing
 DEVICE_ID = 'esp32-factory'
+WIFI_NETWORKS = [
+    ('Office_WiFi', 'password1'),
+    ('Backup_5G',   'password2'),
+]
+MQTT_BROKER = '192.168.1.100'
 READERS = [
     {'role': 'factory_writer', 'cs': 22, 'rack_location': None},
     {'role': 'factory_exit',   'cs':  5, 'rack_location': None},
@@ -363,28 +527,15 @@ Follow the interactive prompts to write `EMP-001` through `EMP-004` to four RFID
 
 ---
 
-## Database Schema
-
-| Table | Purpose |
-|-------|---------|
-| `items` | Product catalogue — id, name, quantity, unit, low_stock_threshold |
-| `rfid_tags` | Tag registry — uid, item_id, state, rack_location, last_scan |
-| `transactions` | Full audit log — action, quantity_change, tag_uid, performed_by, note |
-| `alerts` | Low stock + security events |
-| `users` | Dashboard login accounts — username, password_hash, role |
-| `workers` | Worker registry — employee_id, name, uid, role, active, last_seen |
-| `write_jobs` | Factory write job queue — batch_id, item_id, quantity, written, status |
-
----
-
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Microcontroller | ESP32 (MicroPython) |
+| Microcontroller | ESP32 (MicroPython 1.23) |
 | RFID | MFRC522 / RC522, MIFARE Classic 1K |
-| Messaging | MQTT (paho-mqtt on backend, umqtt.simple on ESP32) |
+| Messaging | MQTT via Mosquitto; paho-mqtt (backend), umqtt.simple (ESP32) |
 | Backend | Python 3, Flask, SQLite |
 | Real-time push | Server-Sent Events (SSE) |
 | Frontend | Tailwind CSS (CDN), Chart.js v4, vanilla JS |
-| Auth | Flask sessions, Werkzeug password hashing (PBKDF2-SHA256) |
+| Auth | Flask sessions, Werkzeug PBKDF2-SHA256 password hashing |
+| Deployment | Gunicorn, systemd, internal DNS / LAN |

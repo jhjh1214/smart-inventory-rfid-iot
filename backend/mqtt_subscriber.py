@@ -14,12 +14,13 @@ Pipeline state machine:
 
 Security:
   dispatched / consumed tag at any gate -> SECURITY ALERT
+  warehouse dispatch without active supervisor session -> SECURITY ALERT (dispatch still proceeds)
 """
 
 import json
+import os
 import threading
 import time as _time
-import time
 from datetime import datetime
 
 import paho.mqtt.client as mqtt
@@ -27,8 +28,10 @@ import paho.mqtt.client as mqtt
 from database import get_db
 import events
 
-BROKER = '192.168.0.115'
-PORT   = 1883
+BROKER        = os.environ.get('MQTT_BROKER', '192.168.0.115')
+PORT          = int(os.environ.get('MQTT_PORT', 1883))
+MQTT_USER     = os.environ.get('MQTT_USER', '')
+MQTT_PASSWORD = os.environ.get('MQTT_PASSWORD', '')
 
 TOPIC_SCAN            = 'inventory/scan'
 TOPIC_ALERT           = 'inventory/alert'
@@ -44,8 +47,61 @@ status  = {'connected': False, 'last_message': None, 'device_last_seen': None}
 _client = None
 
 # ── Worker session state ──────────────────────────────────────────────────────
-_worker_sessions = {}  # device_id -> {employee_id, name, role, expires}
-WORKER_SESSION_TTL = 300  # 5 minutes
+# In-memory cache; persisted to worker_sessions table for restart recovery.
+_worker_sessions: dict = {}   # device_id -> {employee_id, name, role, zone, expires}
+WORKER_SESSION_TTL = 300      # 5 minutes
+
+
+# ── Session persistence helpers ───────────────────────────────────────────────
+
+def _save_session(device_id: str, sess: dict):
+    """Persist a worker session to DB so it survives restarts."""
+    try:
+        conn = get_db()
+        conn.execute('''
+            INSERT OR REPLACE INTO worker_sessions
+            (device_id, employee_id, name, role, zone, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (device_id, sess['employee_id'], sess['name'], sess['role'],
+              sess.get('zone', 'general'), int(sess['expires'])))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f'[MQTT] Session persist error: {e}')
+
+
+def _delete_session(device_id: str):
+    """Remove a session from DB when it expires."""
+    try:
+        conn = get_db()
+        conn.execute('DELETE FROM worker_sessions WHERE device_id = ?', (device_id,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _load_sessions():
+    """Load unexpired sessions from DB into memory on startup."""
+    now = _time.time()
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT * FROM worker_sessions WHERE expires_at > ?', (int(now),))
+        rows = c.fetchall()
+        conn.close()
+        for row in rows:
+            _worker_sessions[row['device_id']] = {
+                'employee_id': row['employee_id'],
+                'name':        row['name'],
+                'role':        row['role'],
+                'zone':        row.get('zone', 'general'),
+                'expires':     row['expires_at'],
+            }
+        if rows:
+            print(f'[MQTT] Restored {len(rows)} worker session(s) from DB')
+    except Exception as e:
+        print(f'[MQTT] Session load error: {e}')
 
 
 # ── MQTT callbacks ────────────────────────────────────────────────────────────
@@ -73,7 +129,8 @@ def _on_message(client, userdata, msg):
     status['last_message'] = datetime.now().isoformat()
     try:
         payload = json.loads(msg.payload.decode())
-    except Exception:
+    except Exception as e:
+        print(f'[MQTT] Bad payload on {msg.topic}: {e}')
         return
 
     # Worker badge interception — must happen before pipeline routing
@@ -125,6 +182,13 @@ def _security_alert(c, conn, client, item_id, item_name, tag_uid, message):
     events.push({'type': 'security_alert', 'tag_uid': tag_uid,
                  'item_id': item_id, 'item_name': item_name, 'message': message})
     print(f'[MQTT] SECURITY: {message}')
+    # Fire outbound webhooks for security events
+    try:
+        from app import _fire_webhooks
+        _fire_webhooks('security', {'item_id': item_id, 'item_name': item_name,
+                                     'tag_uid': tag_uid, 'message': message})
+    except Exception:
+        pass
 
 
 def _low_stock_check(c, client, item_id, item_name, new_qty, threshold, unit):
@@ -139,6 +203,12 @@ def _low_stock_check(c, client, item_id, item_name, new_qty, threshold, unit):
                 'item_id': item_id, 'item_name': item_name,
                 'quantity': new_qty, 'alert_type': alert_type, 'message': msg,
             }))
+        try:
+            from app import _fire_webhooks
+            _fire_webhooks('low_stock', {'item_id': item_id, 'item_name': item_name,
+                                          'quantity': new_qty, 'alert_type': alert_type})
+        except Exception:
+            pass
 
 
 # ── Worker session helpers ────────────────────────────────────────────────────
@@ -152,6 +222,7 @@ def _get_current_worker(device_id):
         return None
     if _time.time() > sess['expires']:
         del _worker_sessions[device_id]
+        _delete_session(device_id)
         return None
     return sess
 
@@ -183,7 +254,6 @@ def _handle_worker_badge(source_topic, payload):
     worker = c.fetchone()
 
     if not worker:
-        # Auto-create on first scan
         c.execute('INSERT INTO workers (employee_id, name, uid) VALUES (?, ?, ?)',
                   (employee_id, employee_id, tag_uid))
         conn.commit()
@@ -203,12 +273,17 @@ def _handle_worker_badge(source_topic, payload):
                      'name': worker['name'], 'device_id': device_id})
         return
 
-    _worker_sessions[device_id] = {
+    expires = _time.time() + WORKER_SESSION_TTL
+    sess = {
         'employee_id': employee_id,
         'name':        worker['name'],
         'role':        worker['role'],
-        'expires':     _time.time() + WORKER_SESSION_TTL,
+        'zone':        worker.get('zone', 'general'),
+        'expires':     expires,
     }
+    _worker_sessions[device_id] = sess
+    _save_session(device_id, sess)
+
     print(f'[MQTT] Worker authenticated: {worker["name"]} ({employee_id}) @ {device_id}')
     events.push({'type': 'worker_auth', 'employee_id': employee_id,
                  'name': worker['name'], 'role': worker['role'], 'device_id': device_id})
@@ -217,17 +292,19 @@ def _handle_worker_badge(source_topic, payload):
 def get_worker_sessions():
     """Return active sessions (for dashboard display)."""
     now = _time.time()
+    expired = [did for did, sess in list(_worker_sessions.items()) if now >= sess['expires']]
+    for did in expired:
+        del _worker_sessions[did]
+        _delete_session(did)
     return {
         did: {**sess, 'expires_in': int(sess['expires'] - now)}
-        for did, sess in list(_worker_sessions.items())
-        if now < sess['expires']
+        for did, sess in _worker_sessions.items()
     }
 
 
 # ── Pipeline handlers ─────────────────────────────────────────────────────────
 
 def _handle_factory_written(client, payload):
-    """factory_writer confirmed write -> register tag as 'tagged'."""
     tag_uid  = payload.get('tag_uid')
     item_id  = payload.get('item_id')
     batch_id = payload.get('batch_id', '')
@@ -265,7 +342,6 @@ def _handle_factory_written(client, payload):
 
 
 def _handle_factory_exit(client, payload):
-    """factory_exit scan -> tagged / out -> in_transit."""
     tag_uid = payload.get('tag_uid')
     if not tag_uid:
         return
@@ -336,12 +412,14 @@ def _handle_warehouse_gate(client, payload):
         item_id = payload.get('item_id')
         if item_id:
             item = _ensure_item(c, item_id)
-            prev = item['quantity']
-            new_qty = prev + 1
+            # Use atomic SQL update to avoid race conditions
+            c.execute('''UPDATE items SET quantity = quantity + 1, updated_at = CURRENT_TIMESTAMP
+                         WHERE id = ?''', (item_id,))
+            c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
+            new_qty = c.fetchone()['quantity']
+            prev = new_qty - 1
             c.execute('INSERT INTO rfid_tags (uid, item_id, state) VALUES (?, ?, ?)',
                       (tag_uid, item_id, 'received'))
-            c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                      (new_qty, item_id))
             c.execute('''INSERT INTO transactions
                        (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
                        VALUES (?, 'warehouse_receive', 1, ?, ?, ?, ?)''',
@@ -360,17 +438,21 @@ def _handle_warehouse_gate(client, payload):
     item_id = tag['item_id']
 
     if state in ('in_transit', 'out'):
-        prev    = tag['quantity']
-        new_qty = prev + 1
+        # Atomic increment
+        c.execute('''UPDATE items SET quantity = quantity + 1, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?''', (item_id,))
+        c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
+        new_qty = c.fetchone()['quantity']
+        prev = new_qty - 1
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('received', tag_uid))
-        c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                  (new_qty, item_id))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
                    VALUES (?, 'warehouse_receive', 1, ?, ?, ?, ?)''',
                   (item_id, prev, new_qty, tag_uid, payload.get('device_id', 'unknown')))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
+        # Check against any open purchase orders
+        _check_purchase_order(c, item_id)
         conn.commit()
         conn.close()
         print(f'[MQTT] RECEIVED   {tag_uid} -> {tag["item_name"]}  qty {prev}->{new_qty}')
@@ -379,8 +461,6 @@ def _handle_warehouse_gate(client, payload):
                      'item_name': tag['item_name'], 'quantity': new_qty})
 
     elif state in ('received', 'racked', 'returned', 'in'):
-        prev      = tag['quantity']
-        new_qty   = max(0, prev - 1)
         device_id = payload.get('device_id', 'unknown')
         worker    = _get_current_worker(device_id)
         if not worker or worker['role'] != 'supervisor':
@@ -391,10 +471,14 @@ def _handle_warehouse_gate(client, payload):
             events.push({'type': 'security_alert', 'tag_uid': tag_uid, 'item_id': item_id,
                          'item_name': tag['item_name'],
                          'message': f'Dispatch from {device_id} without supervisor'})
+        # Atomic decrement, never below 0
+        c.execute('''UPDATE items SET quantity = MAX(0, quantity - 1),
+                     updated_at = CURRENT_TIMESTAMP WHERE id = ?''', (item_id,))
+        c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
+        new_qty = c.fetchone()['quantity']
+        prev    = new_qty + 1  # approximate; could be 0 if was 0
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('dispatched', tag_uid))
-        c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                  (new_qty, item_id))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
                    VALUES (?, 'warehouse_dispatch', -1, ?, ?, ?, ?)''',
@@ -404,7 +488,7 @@ def _handle_warehouse_gate(client, payload):
                          new_qty, tag['low_stock_threshold'], tag['unit'])
         conn.commit()
         conn.close()
-        print(f'[MQTT] DISPATCHED  {tag_uid} -> {tag["item_name"]}  qty {prev}->{new_qty}')
+        print(f'[MQTT] DISPATCHED  {tag_uid} -> {tag["item_name"]}  qty ->{new_qty}')
         events.push({'type': 'pipeline', 'stage': 'dispatched',
                      'tag_uid': tag_uid, 'item_id': item_id,
                      'item_name': tag['item_name'], 'quantity': new_qty})
@@ -419,7 +503,8 @@ def _handle_warehouse_gate(client, payload):
 
 
 def _handle_warehouse_rack(client, payload):
-    """received / returned -> racked, records shelf location."""
+    """received / returned -> racked, records shelf location.
+    Invalid states are logged and rejected — no silent corruption."""
     tag_uid       = payload.get('tag_uid')
     rack_location = payload.get('rack_location', 'unknown')
     if not tag_uid:
@@ -451,12 +536,20 @@ def _handle_warehouse_rack(client, payload):
                      'tag_uid': tag_uid, 'item_id': tag['item_id'],
                      'item_name': tag['item_name'], 'rack_location': rack_location})
     else:
-        print(f'[MQTT] warehouse_rack: {tag_uid} state={state}, expected received/returned')
+        # Invalid state — log an alert instead of silently ignoring
+        print(f'[MQTT] warehouse_rack: {tag_uid} REJECTED — state={state}, expected received/returned')
+        c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
+                  (tag['item_id'], 'security',
+                   f'RACK REJECTED: tag {tag_uid} ({tag["item_name"]}) cannot be racked '
+                   f'from state "{state}" — expected received or returned'))
+        conn.commit()
         conn.close()
+        events.push({'type': 'security_alert', 'tag_uid': tag_uid,
+                     'item_id': tag['item_id'], 'item_name': tag['item_name'],
+                     'message': f'Rack attempt on {state} tag — possible mis-scan'})
 
 
 def _handle_return_gate(client, payload):
-    """Customer return — dispatched -> returned, qty +1."""
     tag_uid = payload.get('tag_uid')
     if not tag_uid:
         return
@@ -471,15 +564,17 @@ def _handle_return_gate(client, payload):
 
     state = tag['state']
     if state in ('dispatched', 'consumed', 'return_pending'):
-        prev    = tag['quantity']
-        new_qty = prev + 1
+        # Atomic increment
+        c.execute('''UPDATE items SET quantity = quantity + 1, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?''', (tag['item_id'],))
+        c.execute('SELECT quantity FROM items WHERE id = ?', (tag['item_id'],))
+        new_qty = c.fetchone()['quantity']
+        prev    = new_qty - 1
         action  = 'return_confirmed' if state == 'return_pending' else 'customer_return'
         note    = ('Return confirmed via physical scan'
                    if state == 'return_pending' else 'Customer return via return gate')
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('returned', tag_uid))
-        c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                  (new_qty, tag['item_id']))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
                    VALUES (?, ?, 1, ?, ?, ?, ?, ?)''',
@@ -488,13 +583,27 @@ def _handle_return_gate(client, payload):
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
-        print(f'[MQTT] RETURNED   {tag_uid} -> {tag["item_name"]}  qty {prev}->{new_qty}')
+        print(f'[MQTT] RETURNED   {tag_uid} -> {tag["item_name"]}  qty ->{new_qty}')
         events.push({'type': 'pipeline', 'stage': 'returned',
                      'tag_uid': tag_uid, 'item_id': tag['item_id'],
                      'item_name': tag['item_name'], 'quantity': new_qty})
     else:
         print(f'[MQTT] return_gate: {tag_uid} state={state}, not returnable — ignore')
         conn.close()
+
+
+def _check_purchase_order(c, item_id):
+    """Increment received_qty on the oldest open PO for this item."""
+    c.execute('''SELECT id, expected_qty, received_qty FROM purchase_orders
+                 WHERE item_id = ? AND status IN ('open', 'partial')
+                 ORDER BY created_at ASC LIMIT 1''', (item_id,))
+    po = c.fetchone()
+    if not po:
+        return
+    new_recv = po['received_qty'] + 1
+    status   = 'complete' if new_recv >= po['expected_qty'] else 'partial'
+    c.execute('UPDATE purchase_orders SET received_qty = ?, status = ? WHERE id = ?',
+              (new_recv, status, po['id']))
 
 
 def _handle_legacy_scan(client, payload):
@@ -533,17 +642,17 @@ def _handle_legacy_scan(client, payload):
         return
 
     if current_state == 'return_pending':
-        prev_qty = item['quantity']
-        new_qty  = prev_qty + 1
-        c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                  (new_qty, item_id))
-        # Go straight to 'in' — item is physically back in warehouse, ready for re-dispatch
+        c.execute('''UPDATE items SET quantity = quantity + 1, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?''', (item_id,))
+        c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
+        new_qty  = c.fetchone()['quantity']
+        prev_qty = new_qty - 1
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('in', tag_uid))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
                    VALUES (?, 'return_confirmed', 1, ?, ?, ?, ?, ?)''',
-                  (item_id, prev_qty, new_qty, tag_uid, 'Return confirmed — item back in warehouse stock',
+                  (item_id, prev_qty, new_qty, tag_uid, 'Return confirmed — item back in stock',
                    payload.get('device_id', 'unknown')))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
@@ -553,15 +662,18 @@ def _handle_legacy_scan(client, payload):
                      'tag_uid': tag_uid, 'tag_state': 'in'})
         return
 
-    prev_qty = item['quantity']
     if current_state == 'out':
         action, change, new_state = 'scan_in',  +1, 'in'
+        c.execute('''UPDATE items SET quantity = quantity + 1, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?''', (item_id,))
     else:
         action, change, new_state = 'scan_out', -1, 'consumed'
+        c.execute('''UPDATE items SET quantity = MAX(0, quantity - 1),
+                     updated_at = CURRENT_TIMESTAMP WHERE id = ?''', (item_id,))
 
-    new_qty = max(0, prev_qty + change)
-    c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-              (new_qty, item_id))
+    c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
+    new_qty  = c.fetchone()['quantity']
+    prev_qty = new_qty - change  # reconstruct
     c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
               (new_state, tag_uid))
     c.execute('''INSERT INTO transactions
@@ -590,12 +702,10 @@ def get_status():
 
 
 def get_active_sessions():
-    """For dashboard: return currently authenticated workers per station."""
     return get_worker_sessions()
 
 
 def publish(topic, payload_str):
-    """Publish a message from app.py (e.g. dispatching write jobs to factory ESP32)."""
     if _client and status['connected']:
         try:
             _client.publish(topic, payload_str)
@@ -605,20 +715,27 @@ def publish(topic, payload_str):
 
 def start_mqtt():
     global _client
+    _load_sessions()  # Restore sessions from DB on startup
+
     _client = mqtt.Client()
+    if MQTT_USER and MQTT_PASSWORD:
+        _client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
     _client.on_connect    = _on_connect
     _client.on_disconnect = _on_disconnect
     _client.on_message    = _on_message
 
     def _run():
+        delay = 5
         while True:
             try:
                 _client.connect(BROKER, PORT, keepalive=60)
+                delay = 5  # reset backoff on successful connect
                 _client.loop_forever()
             except Exception as e:
-                print(f'[MQTT] Reconnecting in 5s ({e})')
                 status['connected'] = False
-                time.sleep(5)
+                print(f'[MQTT] Reconnecting in {delay}s ({e})')
+                _time.sleep(delay)
+                delay = min(delay * 2, 120)  # exponential backoff, cap at 2 minutes
 
     threading.Thread(target=_run, daemon=True).start()
     return _client

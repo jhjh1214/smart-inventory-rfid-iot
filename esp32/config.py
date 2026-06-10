@@ -56,6 +56,12 @@ SCAN_COOLDOWN   = 2   # seconds — suppress re-scan of same UID per reader
 STATUS_INTERVAL = 30  # seconds between MQTT heartbeats
 DEBUG           = True
 
+# ── MQTT authentication (leave blank if broker has no auth) ───────────────────
+MQTT_USER     = ''
+MQTT_PASSWORD = ''
+
+FIRMWARE_VERSION = '1.0.0'
+
 # ── MQTT topics ───────────────────────────────────────────────────────────────
 
 # Legacy / simple demo (single reader, in-out)

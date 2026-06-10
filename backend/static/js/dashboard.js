@@ -63,9 +63,9 @@ let _auditFilter  = 'all';
       document.getElementById('tab-overview').classList.add('active');
       document.getElementById('page-title').textContent = 'Overview';
     } else if (savedTab === 'workers') {
-      fetchWorkers(); fetchUsers();
+      fetchWorkers(); fetchUsers(); fetchWebhooks();
     } else if (savedTab === 'manufacturing') {
-      fetchPipeline();
+      fetchPipeline(); fetchPurchaseOrders('');
     } else if (savedTab === 'audit') {
       fetchAudit();
     }
@@ -184,7 +184,6 @@ function _btnLoad(btn, loading, label) {
     btn.innerHTML = btn._origText || label || 'Submit';
   }
 }
-}
 
 function statusBadge(qty, threshold) {
   if (qty === 0)        return '<span class="badge badge-danger">Out of Stock</span>';
@@ -227,6 +226,7 @@ function actionBadge(action) {
     warehouse_dispatch: 'badge-neutral',
     warehouse_rack:     'badge-purple',
     customer_return:    'badge-orange',
+    tag_reassigned:     'badge-warning',
   };
   return `<span class="badge ${map[action] || 'badge-neutral'}">${esc(action.replace(/_/g,' '))}</span>`;
 }
@@ -312,8 +312,8 @@ function setupTabs() {
       if (tab === 'analytics')     fetchAnalytics();
       if (tab === 'tags')          fetchTags();
       if (tab === 'alerts')        fetchAlerts();
-      if (tab === 'workers')       { fetchWorkers(); fetchUsers(); }
-      if (tab === 'manufacturing') fetchPipeline();
+      if (tab === 'workers')       { fetchWorkers(); fetchUsers(); fetchWebhooks(); }
+      if (tab === 'manufacturing') { fetchPipeline(); fetchPurchaseOrders(''); }
       if (tab === 'audit')         fetchAudit();
     });
   });
@@ -579,13 +579,13 @@ async function fetchTransactions() {
 // ── Inventory table ───────────────────────────────────────────────────────────
 async function fetchItems() {
   const tbody = document.getElementById('inventory-tbody');
-  if (tbody && !_items.length) tbody.innerHTML = _skeletonRows(6);
+  if (tbody && !_items.length) tbody.innerHTML = _skeletonRows(7);
   try {
     const items = await fetch('/api/items').then(r => r.json());
     _items = items;
     renderItemsTable(items);
   } catch {
-    if (tbody) tbody.innerHTML = _tableError(6);
+    if (tbody) tbody.innerHTML = _tableError(7);
   }
 }
 
@@ -597,11 +597,13 @@ function renderItemsTable(items) {
     const btn = isManager
       ? `<button onclick="openAddItemModal()" class="btn-primary text-sm">+ Add first item</button>`
       : '';
-    tbody.innerHTML = _tableEmpty(6, 'box', 'No inventory items yet',
+    tbody.innerHTML = _tableEmpty(7, 'box', 'No inventory items yet',
       'Add your first item to start tracking stock levels and receive alerts.', btn);
     return;
   }
   tbody.innerHTML = items.map(item => {
+    const reserved  = item.reserved_qty || 0;
+    const available = item.available_qty ?? (item.quantity - reserved);
     const rowCls = item.quantity === 0 ? 'row-danger' :
                    item.quantity <= item.low_stock_threshold ? 'row-warning' : '';
     let actions = '<span class="text-gray-300 text-xs">—</span>';
@@ -622,8 +624,11 @@ function renderItemsTable(items) {
         <td class="px-4 py-3 text-right font-mono font-semibold text-gray-700">
           ${item.quantity} <span class="text-xs font-normal text-gray-400">${esc(item.unit)}</span>
         </td>
+        <td class="px-4 py-3 text-right font-mono text-sm ${reserved > 0 ? 'text-amber-600 font-semibold' : 'text-gray-400'}">
+          ${reserved > 0 ? reserved : '—'}
+        </td>
         <td class="px-4 py-3 text-center text-sm text-gray-500">${item.low_stock_threshold}</td>
-        <td class="px-4 py-3 text-center">${statusBadge(item.quantity, item.low_stock_threshold)}</td>
+        <td class="px-4 py-3 text-center">${statusBadge(available, item.low_stock_threshold)}</td>
         <td class="px-4 py-3 text-center text-xs text-gray-400">${fmtDate(item.updated_at)}</td>
         <td class="px-4 py-3 text-center">${actions}</td>
       </tr>`;
@@ -664,21 +669,24 @@ function renderTagsTable(tags) {
       if (t.state === 'return_pending') {
         action = `<div class="action-cell">
           <span class="text-xs text-amber-600 font-medium italic">Awaiting scan…</span>
+          <button onclick="openReassignTagModal('${esc(t.uid)}')" class="btn-sm btn-sm-neutral">Reassign</button>
           <button onclick="deleteTag('${esc(t.uid)}')" class="btn-sm btn-sm-danger">Remove</button>
         </div>`;
       } else if (t.state === 'consumed' || t.state === 'dispatched') {
         action = `<div class="action-cell">
           <button onclick="openReturnModal('${esc(t.uid)}')" class="btn-sm btn-sm-warn">Return</button>
+          <button onclick="openReassignTagModal('${esc(t.uid)}')" class="btn-sm btn-sm-neutral">Reassign</button>
           <button onclick="deleteTag('${esc(t.uid)}')" class="btn-sm btn-sm-danger">Remove</button>
         </div>`;
       } else {
         action = `<div class="action-cell">
+          <button onclick="openReassignTagModal('${esc(t.uid)}')" class="btn-sm btn-sm-neutral">Reassign</button>
           <button onclick="deleteTag('${esc(t.uid)}')" class="btn-sm btn-sm-danger">Remove</button>
         </div>`;
       }
     }
     return `
-      <tr data-tag-uid="${esc(t.uid)}">
+      <tr data-tag-uid="${esc(t.uid)}" data-tag-state="${esc(t.state)}">
         <td class="px-4 py-3 font-mono text-sm text-gray-700">${esc(t.uid)}</td>
         <td class="px-4 py-3 text-sm text-gray-700">${esc(t.item_name || t.item_id)}</td>
         <td class="px-4 py-3 text-center">${tagStateBadge(t.state)}</td>
@@ -689,10 +697,13 @@ function renderTagsTable(tags) {
   }).join('');
 }
 
-function filterTags(q) {
-  const query = q.toLowerCase();
+function filterTags() {
+  const q     = (document.getElementById('tag-search-input')?.value || '').toLowerCase();
+  const state = document.getElementById('tag-state-filter')?.value || '';
   document.querySelectorAll('#tags-tbody tr[data-tag-uid]').forEach(row => {
-    row.style.display = row.textContent.toLowerCase().includes(query) ? '' : 'none';
+    const matchText  = !q || row.textContent.toLowerCase().includes(q);
+    const matchState = !state || row.dataset.tagState === state;
+    row.style.display = (matchText && matchState) ? '' : 'none';
   });
 }
 
@@ -1046,6 +1057,14 @@ function applyRBAC(role) {
   if (accCard) accCard.style.display = isAdmin ? '' : 'none';
   const regCard = document.getElementById('worker-register-card');
   if (regCard) regCard.style.display = isManager ? '' : 'none';
+  const webhooksCard = document.getElementById('webhooks-card');
+  if (webhooksCard) webhooksCard.style.display = isAdmin ? '' : 'none';
+  const poCard = document.getElementById('purchase-orders-card');
+  if (poCard) poCard.style.display = isManager ? '' : 'none';
+  const importBtn = document.getElementById('btn-import-csv');
+  if (importBtn) importBtn.style.display = isManager ? '' : 'none';
+  const addPoBtn = document.getElementById('btn-add-po');
+  if (addPoBtn) addPoBtn.style.display = isManager ? '' : 'none';
 }
 
 // ── Workers tab ───────────────────────────────────────────────────────────────
@@ -1222,6 +1241,7 @@ async function fetchPipeline() {
     populateJobItemSelect(items);
     const card = document.getElementById('write-job-card');
     if (card) card.style.display = (currentRole === 'admin' || currentRole === 'manager') ? '' : 'none';
+    fetchPurchaseOrders('');
   } catch {}
 }
 
@@ -1379,8 +1399,8 @@ function _exportPDF(title, head, body) {
 function exportItemsCSV() {
   if (!_items.length) return showToast('No data to export', 'warning');
   _downloadCSV(
-    [['ID','Name','Quantity','Unit','Low Stock Threshold','Status','Updated'],
-     ..._items.map(i => [i.id, i.name, i.quantity, i.unit, i.low_stock_threshold,
+    [['ID','Name','Quantity','Reserved','Unit','Low Stock Threshold','Status','Updated'],
+     ..._items.map(i => [i.id, i.name, i.quantity, i.reserved_qty || 0, i.unit, i.low_stock_threshold,
        i.quantity === 0 ? 'Out of Stock' : i.quantity <= i.low_stock_threshold ? 'Low Stock' : 'In Stock',
        i.updated_at])],
     'inventory.csv'
@@ -1655,6 +1675,332 @@ document.addEventListener('DOMContentLoaded', () => {
       } finally { _btnLoad(btn, false, 'Save Changes'); }
     });
   }
+});
+
+// ── CSV Import ────────────────────────────────────────────────────────────────
+function openImportCSVModal() {
+  document.getElementById('form-import-csv').reset();
+  const res = document.getElementById('import-csv-result');
+  if (res) res.innerHTML = '';
+  openModal('modal-import-csv');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-import-csv');
+  if (!form) return;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn  = form.querySelector('button[type=submit]');
+    const file = form.querySelector('input[type=file]').files[0];
+    if (!file) return showToast('Select a CSV file first', 'warning');
+    const fd = new FormData();
+    fd.append('file', file);
+    _btnLoad(btn, true, 'Importing…');
+    try {
+      const r = await fetch('/api/import/items', { method:'POST', body: fd });
+      const d = await r.json().catch(() => ({}));
+      const res = document.getElementById('import-csv-result');
+      if (r.ok) {
+        if (res) res.innerHTML = `<div class="text-sm text-green-700 bg-green-50 border border-green-200 rounded p-2 mt-2">
+          Created: ${d.created} &nbsp;|&nbsp; Updated: ${d.updated} &nbsp;|&nbsp; Errors: ${d.errors}
+        </div>`;
+        fetchItems(); refreshSummary();
+        showToast(`Import complete: ${d.created} created, ${d.updated} updated`, 'success');
+      } else {
+        if (res) res.innerHTML = `<div class="text-sm text-red-600 mt-2">${esc(d.error || 'Import failed')}</div>`;
+        showToast(d.error || 'Import failed', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Import'); }
+  });
+});
+
+// ── Tag Reassignment ──────────────────────────────────────────────────────────
+function openReassignTagModal(uid) {
+  const display = document.getElementById('reassign-old-uid');
+  const input   = document.getElementById('reassign-old-uid-input');
+  const newUid  = document.getElementById('reassign-new-uid');
+  if (display) display.textContent = uid;
+  if (input)   input.value = uid;
+  if (newUid)  newUid.value = '';
+  openModal('modal-reassign-tag');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-reassign-tag');
+  if (!form) return;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn     = form.querySelector('button[type=submit]');
+    const old_uid = document.getElementById('reassign-old-uid-input').value;
+    const new_uid = document.getElementById('reassign-new-uid').value.trim();
+    if (!new_uid) return showToast('Enter the new tag UID', 'warning');
+    _btnLoad(btn, true, 'Reassigning…');
+    try {
+      const r = await fetch(`/api/tags/${encodeURIComponent(old_uid)}/reassign`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ new_uid }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        closeModal('modal-reassign-tag');
+        fetchTags();
+        showToast(`Tag reassigned to ${new_uid}`, 'success');
+      } else {
+        showToast(d.error || 'Reassignment failed', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Reassign Tag'); }
+  });
+});
+
+// ── Change Password ───────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-change-password');
+  if (!form) return;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn     = form.querySelector('button[type=submit]');
+    const current = document.getElementById('cp-current').value;
+    const newPw   = document.getElementById('cp-new').value;
+    const confirm = document.getElementById('cp-confirm').value;
+    if (newPw !== confirm) return showToast('New passwords do not match', 'warning');
+    if (newPw.length < 6)  return showToast('Password must be at least 6 characters', 'warning');
+    _btnLoad(btn, true, 'Saving…');
+    try {
+      const meR = await fetch('/api/me').then(r => r.json()).catch(() => null);
+      if (!meR) return showToast('Session error — please log in again', 'error');
+      const r = await fetch(`/api/users/${meR.id}/password`, {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ current_password: current, new_password: newPw }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        form.reset();
+        showToast('Password changed successfully', 'success');
+      } else {
+        showToast(d.error || 'Failed to change password', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Change Password'); }
+  });
+});
+
+// ── Purchase Orders ───────────────────────────────────────────────────────────
+let _pos = [];
+let _poFilter = '';
+
+async function fetchPurchaseOrders(statusFilter) {
+  _poFilter = statusFilter;
+  const tbody = document.getElementById('po-tbody');
+  if (tbody) tbody.innerHTML = _skeletonRows(7, 3);
+  try {
+    const url = '/api/purchase-orders' + (statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : '');
+    const pos  = await fetch(url).then(r => r.json());
+    _pos = pos;
+    renderPOTable(pos);
+    document.querySelectorAll('#po-filters button').forEach(btn => {
+      btn.className = `btn-sm ${btn.dataset.filter === statusFilter ? 'btn-sm-edit' : 'btn-sm-neutral'}`;
+    });
+  } catch {
+    if (tbody) tbody.innerHTML = _tableError(7);
+  }
+}
+
+function renderPOTable(pos) {
+  const tbody = document.getElementById('po-tbody');
+  if (!tbody) return;
+  if (!pos.length) {
+    tbody.innerHTML = _tableEmpty(7, 'clipboard', 'No purchase orders',
+      'Create a PO to track expected deliveries and auto-match against warehouse receives.');
+    return;
+  }
+  const statusBadgePO = s => {
+    const map = { open:'badge-info', partial:'badge-warning', fulfilled:'badge-success', cancelled:'badge-neutral' };
+    return `<span class="badge ${map[s] || 'badge-neutral'}">${esc(s)}</span>`;
+  };
+  const canEdit = currentRole === 'admin' || currentRole === 'manager';
+  tbody.innerHTML = pos.map(p => {
+    const progress = p.expected_qty > 0 ? Math.min(100, Math.round(p.received_qty / p.expected_qty * 100)) : 0;
+    return `
+      <tr>
+        <td class="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">${fmtDate(p.created_at)}</td>
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-800">${esc(p.item_name || p.item_id)}</div>
+          <div class="text-xs text-gray-400">${esc(p.item_id)}</div>
+        </td>
+        <td class="px-4 py-3 text-right font-mono text-sm">${p.expected_qty}</td>
+        <td class="px-4 py-3 text-right font-mono text-sm text-green-600">${p.received_qty}</td>
+        <td class="px-4 py-3">
+          <div class="w-full bg-gray-100 rounded-full h-1.5">
+            <div class="h-1.5 rounded-full ${progress >= 100 ? 'bg-green-500' : 'bg-blue-500'}" style="width:${progress}%"></div>
+          </div>
+          <div class="text-xs text-gray-400 text-right mt-0.5">${progress}%</div>
+        </td>
+        <td class="px-4 py-3 text-center">${statusBadgePO(p.status)}</td>
+        <td class="px-4 py-3 text-center">
+          ${canEdit
+            ? `<div class="action-cell"><button onclick="deletePO(${p.id})" class="btn-sm btn-sm-danger">Delete</button></div>`
+            : '<span class="text-gray-300 text-xs">—</span>'}
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+function openAddPOModal() {
+  const sel = document.getElementById('po-item-id');
+  if (sel) {
+    sel.innerHTML = '<option value="">Select item…</option>' +
+      _items.map(i => `<option value="${esc(i.id)}">${esc(i.name)}</option>`).join('');
+  }
+  const form = document.getElementById('form-add-po');
+  if (form) form.reset();
+  openModal('modal-add-po');
+}
+
+async function deletePO(id) {
+  const ok = await customConfirm('Delete Purchase Order', 'Delete this purchase order?', true);
+  if (!ok) return;
+  const r = await fetch(`/api/purchase-orders/${id}`, { method:'DELETE' });
+  if (r.ok) { showToast('Purchase order deleted', 'info'); fetchPurchaseOrders(_poFilter); }
+  else showToast('Failed to delete PO', 'error');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-add-po');
+  if (!form) return;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = form.querySelector('button[type=submit]');
+    const body = {
+      item_id:      document.getElementById('po-item-id').value,
+      expected_qty: parseInt(document.getElementById('po-expected-qty').value),
+      note:         (document.getElementById('po-note')?.value || '').trim() || null,
+    };
+    if (!body.item_id)         return showToast('Select an item', 'warning');
+    if (body.expected_qty < 1) return showToast('Expected quantity must be at least 1', 'warning');
+    _btnLoad(btn, true, 'Creating…');
+    try {
+      const r = await fetch('/api/purchase-orders', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        closeModal('modal-add-po');
+        fetchPurchaseOrders('');
+        showToast('Purchase order created', 'success');
+      } else {
+        const d = await r.json().catch(() => ({}));
+        showToast(d.error || 'Failed to create PO', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Create PO'); }
+  });
+});
+
+// ── Webhooks ──────────────────────────────────────────────────────────────────
+let _webhooks = [];
+
+async function fetchWebhooks() {
+  if (currentRole !== 'admin') return;
+  const tbody = document.getElementById('webhooks-tbody');
+  if (tbody) tbody.innerHTML = _skeletonRows(5, 2);
+  try {
+    const whs = await fetch('/api/webhooks').then(r => r.json());
+    _webhooks = whs;
+    renderWebhooksTable(whs);
+  } catch {
+    if (tbody) tbody.innerHTML = _tableError(5);
+  }
+}
+
+function renderWebhooksTable(whs) {
+  const tbody = document.getElementById('webhooks-tbody');
+  if (!tbody) return;
+  if (!whs.length) {
+    tbody.innerHTML = _tableEmpty(5, 'wifi', 'No webhooks configured',
+      'Add a webhook URL to receive real-time POST notifications for low stock and security events.');
+    return;
+  }
+  tbody.innerHTML = whs.map(w => `
+    <tr>
+      <td class="px-4 py-3 font-medium text-gray-800">${esc(w.name)}</td>
+      <td class="px-4 py-3 text-xs font-mono text-gray-500 max-w-xs truncate" title="${esc(w.url)}">${esc(w.url)}</td>
+      <td class="px-4 py-3 text-xs text-gray-500">${esc(w.events)}</td>
+      <td class="px-4 py-3 text-center">
+        ${w.active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-neutral">Inactive</span>'}
+      </td>
+      <td class="px-4 py-3 text-center">
+        <div class="action-cell">
+          <button onclick='openEditWebhookModal(${JSON.stringify(w)})' class="btn-sm btn-sm-edit">Edit</button>
+          <button onclick="testWebhook(${w.id})" class="btn-sm btn-sm-neutral">Test</button>
+          <button onclick="deleteWebhook(${w.id})" class="btn-sm btn-sm-danger">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+function openAddWebhookModal() {
+  document.getElementById('webhook-modal-title').textContent = 'Add Webhook';
+  document.getElementById('webhook-id').value = '';
+  document.getElementById('form-webhook').reset();
+  openModal('modal-webhook');
+}
+
+function openEditWebhookModal(wh) {
+  document.getElementById('webhook-modal-title').textContent = 'Edit Webhook';
+  document.getElementById('webhook-id').value      = wh.id;
+  document.getElementById('webhook-name').value    = wh.name;
+  document.getElementById('webhook-url').value     = wh.url;
+  document.getElementById('webhook-events').value  = wh.events;
+  const activeEl = document.getElementById('webhook-active');
+  if (activeEl) activeEl.checked = !!wh.active;
+  openModal('modal-webhook');
+}
+
+async function deleteWebhook(id) {
+  const ok = await customConfirm('Delete Webhook', 'Remove this webhook endpoint?', true);
+  if (!ok) return;
+  const r = await fetch(`/api/webhooks/${id}`, { method:'DELETE' });
+  if (r.ok) { showToast('Webhook deleted', 'info'); fetchWebhooks(); }
+  else showToast('Failed to delete webhook', 'error');
+}
+
+async function testWebhook(id) {
+  const r = await fetch(`/api/webhooks/${id}/test`, { method:'POST' });
+  if (r.ok) showToast('Test payload sent', 'success');
+  else showToast('Test failed — check the endpoint URL', 'error');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-webhook');
+  if (!form) return;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn    = form.querySelector('button[type=submit]');
+    const id     = document.getElementById('webhook-id').value;
+    const active = document.getElementById('webhook-active');
+    const body   = {
+      name:   document.getElementById('webhook-name').value.trim(),
+      url:    document.getElementById('webhook-url').value.trim(),
+      events: document.getElementById('webhook-events').value.trim() || 'low_stock,security',
+      active: (active ? active.checked : true) ? 1 : 0,
+    };
+    if (!body.name) return showToast('Webhook name is required', 'warning');
+    if (!body.url)  return showToast('Webhook URL is required', 'warning');
+    _btnLoad(btn, true, id ? 'Saving…' : 'Adding…');
+    try {
+      const r = await fetch(id ? `/api/webhooks/${id}` : '/api/webhooks', {
+        method: id ? 'PUT' : 'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        closeModal('modal-webhook');
+        fetchWebhooks();
+        showToast(id ? 'Webhook updated' : 'Webhook added', 'success');
+      } else {
+        const d = await r.json().catch(() => ({}));
+        showToast(d.error || 'Failed to save webhook', 'error');
+      }
+    } finally { _btnLoad(btn, false, id ? 'Save Changes' : 'Add Webhook'); }
+  });
 });
 
 // ── Init overview charts ──────────────────────────────────────────────────────

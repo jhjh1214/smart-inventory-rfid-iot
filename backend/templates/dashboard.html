@@ -229,7 +229,11 @@
           <input class="search-input" placeholder="Search by name or ID…" oninput="filterInventory(this.value)" />
           <button class="btn-export" onclick="exportItemsCSV()">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-            CSV
+            Export CSV
+          </button>
+          <button class="btn-export" id="btn-import-csv" onclick="openImportCSVModal()">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+            Import CSV
           </button>
           <button class="btn-export" onclick="exportItemsPDF()">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
@@ -242,6 +246,7 @@
               <tr>
                 <th class="th text-left">Item</th>
                 <th class="th text-right">Qty</th>
+                <th class="th text-right">Reserved</th>
                 <th class="th text-center">Threshold</th>
                 <th class="th text-center">Status</th>
                 <th class="th text-center">Updated</th>
@@ -349,7 +354,20 @@
           </div>
         </div>
         <div class="table-toolbar">
-          <input class="search-input" placeholder="Search by UID, item or state…" oninput="filterTags(this.value)" />
+          <input id="tag-search-input" class="search-input" placeholder="Search by UID, item or state…" oninput="filterTags()" />
+          <select id="tag-state-filter" class="form-input text-sm" style="width:auto;padding:6px 10px" onchange="filterTags()">
+            <option value="">All states</option>
+            <option value="tagged">tagged</option>
+            <option value="in_transit">in_transit</option>
+            <option value="received">received</option>
+            <option value="racked">racked</option>
+            <option value="dispatched">dispatched</option>
+            <option value="returned">returned</option>
+            <option value="out">out</option>
+            <option value="in">in</option>
+            <option value="consumed">consumed</option>
+            <option value="return_pending">return_pending</option>
+          </select>
           <button class="btn-export" onclick="exportTagsCSV()">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
             CSV
@@ -502,6 +520,26 @@
         </div>
       </div>
 
+      <!-- Change own password -->
+      <div class="card" id="change-password-card">
+        <h2 class="card-title mb-4">Change My Password</h2>
+        <form id="form-change-password" class="space-y-3 max-w-sm">
+          <div>
+            <label class="form-label">Current Password</label>
+            <input id="cp-current" type="password" class="form-input" placeholder="Current password" />
+          </div>
+          <div>
+            <label class="form-label">New Password</label>
+            <input id="cp-new" type="password" class="form-input" placeholder="Min 6 characters" />
+          </div>
+          <div>
+            <label class="form-label">Confirm New Password</label>
+            <input id="cp-confirm" type="password" class="form-input" placeholder="Repeat new password" />
+          </div>
+          <button type="submit" class="btn-primary">Update Password</button>
+        </form>
+      </div>
+
       <!-- Dashboard Accounts (admin only) -->
       <div class="card" id="dashboard-accounts-card">
         <div class="flex items-center justify-between mb-3">
@@ -525,6 +563,33 @@
             </thead>
             <tbody id="dashboard-accounts-tbody">
               <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Webhook Notifications (admin only) -->
+      <div class="card" id="webhooks-card">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="card-title">Webhook Notifications</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Send HTTP POST to external URLs (Slack, Teams, custom) on low-stock or security events.</p>
+          </div>
+          <button onclick="openAddWebhookModal()" class="btn-primary text-sm">+ Add Webhook</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm table-row-hover">
+            <thead class="table-head">
+              <tr>
+                <th class="th text-left">Name</th>
+                <th class="th text-left">URL</th>
+                <th class="th text-left">Events</th>
+                <th class="th text-center">Active</th>
+                <th class="th text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="webhooks-tbody">
+              <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">No webhooks configured</td></tr>
             </tbody>
           </table>
         </div>
@@ -611,6 +676,41 @@
         <h2 class="card-title mb-3">Rack Utilisation</h2>
         <div id="rack-stats" class="flex flex-wrap gap-3">
           <span class="text-slate-400 text-sm">No racked items</span>
+        </div>
+      </div>
+
+      <!-- Purchase Orders -->
+      <div class="card" id="purchase-orders-card">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div>
+            <h2 class="card-title">Purchase Orders</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Track expected stock deliveries and auto-match against warehouse receives.</p>
+          </div>
+          <button onclick="openAddPOModal()" class="btn-primary text-sm" id="btn-add-po">+ New PO</button>
+        </div>
+        <div class="flex gap-2 mb-3 flex-wrap">
+          <button onclick="fetchPurchaseOrders('')"      class="btn-sm btn-sm-edit"    data-po-filter="">All</button>
+          <button onclick="fetchPurchaseOrders('open')"  class="btn-sm btn-sm-neutral" data-po-filter="open">Open</button>
+          <button onclick="fetchPurchaseOrders('partial')" class="btn-sm btn-sm-neutral" data-po-filter="partial">Partial</button>
+          <button onclick="fetchPurchaseOrders('complete')" class="btn-sm btn-sm-neutral" data-po-filter="complete">Complete</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm table-row-hover">
+            <thead class="table-head">
+              <tr>
+                <th class="th text-left">Item</th>
+                <th class="th text-right">Expected</th>
+                <th class="th text-right">Received</th>
+                <th class="th text-center">Status</th>
+                <th class="th text-left">Note</th>
+                <th class="th text-center">Created</th>
+                <th class="th text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="po-tbody">
+              <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -804,6 +904,114 @@
         <div class="flex gap-2 pt-2">
           <button type="submit" class="flex-1 btn-primary">Save Changes</button>
           <button type="button" onclick="closeModal('modal-edit-user')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Reassign Tag -->
+  <div id="modal-reassign-tag" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 class="text-lg font-semibold text-gray-800 mb-1">Reassign Tag</h3>
+      <p class="text-sm text-slate-500 mb-4">Transfer the tag's item and state to a new physical UID (e.g. replace a damaged label).</p>
+      <form id="form-reassign-tag" class="space-y-3">
+        <input type="hidden" id="reassign-old-uid" />
+        <div>
+          <label class="form-label">Current UID</label>
+          <input id="reassign-old-uid-display" type="text" class="form-input bg-slate-50" readonly />
+        </div>
+        <div>
+          <label class="form-label">New UID</label>
+          <input id="reassign-new-uid" type="text" placeholder="Scan or type new tag UID" class="form-input uppercase" required />
+        </div>
+        <div>
+          <label class="form-label">Reason</label>
+          <input id="reassign-reason" type="text" placeholder="e.g. Damaged label, reprinted sticker" class="form-input" />
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 bg-amber-500 text-white py-2 rounded-lg hover:bg-amber-600 transition text-sm font-medium">Reassign Tag</button>
+          <button type="button" onclick="closeModal('modal-reassign-tag')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Import CSV -->
+  <div id="modal-import-csv" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 class="text-lg font-semibold text-gray-800 mb-1">Import Items from CSV</h3>
+      <p class="text-sm text-slate-500 mb-3">Existing items will be updated; new items will be created. Required columns: <code class="bg-slate-100 px-1 rounded text-xs">id, name, quantity, unit, low_stock_threshold</code></p>
+      <div class="bg-slate-50 rounded-lg p-3 mb-4 text-xs font-mono text-slate-500">
+        id,name,quantity,unit,low_stock_threshold<br/>
+        item-009,Widget A,50,pcs,10
+      </div>
+      <form id="form-import-csv" class="space-y-3">
+        <div>
+          <label class="form-label">CSV File</label>
+          <input id="csv-file-input" type="file" accept=".csv" class="form-input" required />
+        </div>
+        <div id="import-result" class="hidden"></div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 btn-primary">Import</button>
+          <button type="button" onclick="closeModal('modal-import-csv')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add / Edit Webhook -->
+  <div id="modal-webhook" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 id="webhook-modal-title" class="text-lg font-semibold text-gray-800 mb-4">Add Webhook</h3>
+      <form id="form-webhook" class="space-y-3">
+        <input type="hidden" id="webhook-id" />
+        <div>
+          <label class="form-label">Name</label>
+          <input id="wh-name" type="text" placeholder="e.g. Slack Low Stock" class="form-input" required />
+        </div>
+        <div>
+          <label class="form-label">URL</label>
+          <input id="wh-url" type="url" placeholder="https://hooks.slack.com/…" class="form-input" required />
+        </div>
+        <div>
+          <label class="form-label">Events (comma-separated)</label>
+          <input id="wh-events" type="text" placeholder="low_stock,security" value="low_stock,security" class="form-input" />
+          <p class="text-xs text-slate-400 mt-1">Options: <code>low_stock</code>, <code>security</code>, <code>*</code> (all)</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="wh-active" type="checkbox" checked class="w-4 h-4" />
+          <label for="wh-active" class="text-sm text-slate-700">Active</label>
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 btn-primary">Save Webhook</button>
+          <button type="button" onclick="closeModal('modal-webhook')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add Purchase Order -->
+  <div id="modal-add-po" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 class="text-lg font-semibold text-gray-800 mb-4">New Purchase Order</h3>
+      <form id="form-add-po" class="space-y-3">
+        <div>
+          <label class="form-label">Item</label>
+          <select id="po-item-id" class="form-input" required>
+            <option value="">Select item…</option>
+          </select>
+        </div>
+        <div>
+          <label class="form-label">Expected Quantity</label>
+          <input id="po-expected-qty" type="number" min="1" value="1" class="form-input" required />
+        </div>
+        <div>
+          <label class="form-label">Note <span class="text-slate-400 font-normal">(optional)</span></label>
+          <input id="po-note" type="text" placeholder="e.g. Order #1234 from Supplier X" class="form-input" />
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 btn-primary">Create PO</button>
+          <button type="button" onclick="closeModal('modal-add-po')" class="flex-1 btn-secondary">Cancel</button>
         </div>
       </form>
     </div>

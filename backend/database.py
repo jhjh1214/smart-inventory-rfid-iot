@@ -20,6 +20,7 @@ def init_db():
             id                  TEXT PRIMARY KEY,
             name                TEXT NOT NULL,
             quantity            INTEGER DEFAULT 0,
+            reserved_qty        INTEGER DEFAULT 0,
             unit                TEXT DEFAULT 'pcs',
             low_stock_threshold INTEGER DEFAULT 5,
             created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -36,6 +37,7 @@ def init_db():
             tag_uid           TEXT,
             performed_by      TEXT DEFAULT 'system',
             note              TEXT,
+            device_id         TEXT DEFAULT 'dashboard',
             timestamp         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (item_id) REFERENCES items(id)
         );
@@ -54,6 +56,7 @@ def init_db():
             item_id       TEXT NOT NULL,
             state         TEXT DEFAULT 'tagged',
             rack_location TEXT,
+            previous_uid  TEXT,
             registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_scan     TIMESTAMP,
             FOREIGN KEY (item_id) REFERENCES items(id)
@@ -64,6 +67,8 @@ def init_db():
             username      TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             role          TEXT DEFAULT 'viewer',
+            badge_uid     TEXT,
+            employee_id   TEXT,
             created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -73,6 +78,7 @@ def init_db():
             name        TEXT NOT NULL DEFAULT 'Unknown',
             uid         TEXT UNIQUE,
             role        TEXT DEFAULT 'operator',
+            zone        TEXT DEFAULT 'general',
             active      INTEGER DEFAULT 1,
             last_seen   TIMESTAMP,
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -90,25 +96,68 @@ def init_db():
             completed_at TIMESTAMP,
             FOREIGN KEY (item_id) REFERENCES items(id)
         );
+
+        CREATE TABLE IF NOT EXISTS worker_sessions (
+            device_id   TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            role        TEXT NOT NULL,
+            zone        TEXT DEFAULT 'general',
+            expires_at  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version     INTEGER PRIMARY KEY,
+            applied_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            description TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS webhooks (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            url        TEXT NOT NULL,
+            events     TEXT DEFAULT 'low_stock,security',
+            active     INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS purchase_orders (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id      TEXT NOT NULL,
+            expected_qty INTEGER NOT NULL,
+            received_qty INTEGER DEFAULT 0,
+            status       TEXT DEFAULT 'open',
+            note         TEXT,
+            created_by   TEXT,
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (item_id) REFERENCES items(id)
+        );
     ''')
 
-    # ── Schema migrations (safe to run on existing databases) ────────────────
-    migrations = [
-        "ALTER TABLE rfid_tags ADD COLUMN last_scan TIMESTAMP",
-        "ALTER TABLE rfid_tags ADD COLUMN rack_location TEXT",
-        "ALTER TABLE transactions ADD COLUMN performed_by TEXT DEFAULT 'system'",
-        "ALTER TABLE transactions ADD COLUMN note TEXT",
-        # Accountability layer
-        "ALTER TABLE transactions ADD COLUMN device_id TEXT DEFAULT 'dashboard'",
-        "ALTER TABLE users ADD COLUMN badge_uid TEXT",
-        "ALTER TABLE users ADD COLUMN employee_id TEXT",
-        "ALTER TABLE workers ADD COLUMN zone TEXT DEFAULT 'general'",
+    # ── Schema migrations (tracked via schema_version to avoid re-runs) ──────
+    _MIGRATIONS = [
+        (1,  "ALTER TABLE rfid_tags ADD COLUMN last_scan TIMESTAMP"),
+        (2,  "ALTER TABLE rfid_tags ADD COLUMN rack_location TEXT"),
+        (3,  "ALTER TABLE transactions ADD COLUMN performed_by TEXT DEFAULT 'system'"),
+        (4,  "ALTER TABLE transactions ADD COLUMN note TEXT"),
+        (5,  "ALTER TABLE transactions ADD COLUMN device_id TEXT DEFAULT 'dashboard'"),
+        (6,  "ALTER TABLE users ADD COLUMN badge_uid TEXT"),
+        (7,  "ALTER TABLE users ADD COLUMN employee_id TEXT"),
+        (8,  "ALTER TABLE workers ADD COLUMN zone TEXT DEFAULT 'general'"),
+        (9,  "ALTER TABLE items ADD COLUMN reserved_qty INTEGER DEFAULT 0"),
+        (10, "ALTER TABLE rfid_tags ADD COLUMN previous_uid TEXT"),
     ]
-    for sql in migrations:
+    for version, sql in _MIGRATIONS:
+        c.execute('SELECT 1 FROM schema_version WHERE version = ?', (version,))
+        if c.fetchone():
+            continue
         try:
             c.execute(sql)
-        except Exception:
-            pass  # column already exists
+        except Exception as e:
+            if 'duplicate column' not in str(e).lower():
+                print(f'[DB] Migration {version} note: {e}')
+        c.execute('INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)',
+                  (version, sql[:80]))
 
     # ── Seed demo items on fresh database ────────────────────────────────────
     c.execute('SELECT COUNT(*) FROM items')
@@ -128,7 +177,7 @@ def init_db():
             demo_items
         )
 
-    # ── Seed default admin and manager on fresh database ────────────────────
+    # ── Seed default users on fresh database ─────────────────────────────────
     c.execute('SELECT COUNT(*) FROM users')
     if c.fetchone()[0] == 0:
         from werkzeug.security import generate_password_hash as _h
@@ -139,7 +188,7 @@ def init_db():
         ])
         print('[DB] Default users: admin/admin123  manager/manager123  viewer/viewer123')
 
-    # ── Ensure manager + viewer demo accounts exist ──────────────────────────
+    # ── Ensure demo accounts exist on upgraded databases ─────────────────────
     for username, plain, role in [('manager', 'manager123', 'manager'),
                                    ('viewer',  'viewer123',  'viewer')]:
         c.execute('SELECT id FROM users WHERE username = ?', (username,))
@@ -151,13 +200,13 @@ def init_db():
     c.execute('SELECT COUNT(*) FROM workers')
     if c.fetchone()[0] == 0:
         demo_workers = [
-            ('EMP-001', 'Alice Tan',   'supervisor'),
-            ('EMP-002', 'Bob Lim',     'operator'),
-            ('EMP-003', 'Carol Wong',  'operator'),
-            ('EMP-004', 'David Ng',    'operator'),
+            ('EMP-001', 'Alice Tan',   'supervisor', 'warehouse'),
+            ('EMP-002', 'Bob Lim',     'operator',   'warehouse'),
+            ('EMP-003', 'Carol Wong',  'operator',   'factory'),
+            ('EMP-004', 'David Ng',    'operator',   'factory'),
         ]
         c.executemany(
-            'INSERT INTO workers (employee_id, name, role) VALUES (?, ?, ?)',
+            'INSERT INTO workers (employee_id, name, role, zone) VALUES (?, ?, ?, ?)',
             demo_workers
         )
         print('[DB] Demo workers seeded — write EMP-001..EMP-004 to RFID badges via tag_writer')

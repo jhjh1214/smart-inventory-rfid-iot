@@ -1,11 +1,21 @@
+import csv
+import io
 import json
+import os
+import shutil
+import tempfile
+import threading
+import time as _time
+import urllib.request
+from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import (Flask, jsonify, request, render_template, Response,
-                   stream_with_context, session, redirect, url_for)
+                   stream_with_context, session, redirect, url_for, send_file,
+                   after_this_request)
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from database import init_db, get_db
+from database import init_db, get_db, DB_PATH
 from analytics import (get_all_analytics, get_item_analytics,
                         get_transaction_trends, get_abc_analysis,
                         get_inventory_summary, get_pipeline_summary)
@@ -16,7 +26,68 @@ from mqtt_subscriber import (start_mqtt, get_status as mqtt_status,
 import events
 
 app = Flask(__name__)
-app.secret_key = 'inv-secret-key-change-in-prod'
+app.secret_key = os.environ.get('SECRET_KEY', 'inv-secret-key-change-in-prod')
+app.permanent_session_lifetime = timedelta(hours=8)
+
+# ── Login rate limiting ───────────────────────────────────────────────────────
+_login_attempts: dict = {}   # ip -> {'count': int, 'reset_at': float}
+_LOGIN_MAX    = 10
+_LOGIN_WINDOW = 300  # 5 minutes
+
+
+def _is_rate_limited(ip: str) -> bool:
+    record = _login_attempts.get(ip)
+    if not record:
+        return False
+    if _time.time() > record['reset_at']:
+        _login_attempts.pop(ip, None)
+        return False
+    return record['count'] >= _LOGIN_MAX
+
+
+def _record_failure(ip: str):
+    now = _time.time()
+    record = _login_attempts.get(ip)
+    if record and now < record['reset_at']:
+        record['count'] += 1
+    else:
+        _login_attempts[ip] = {'count': 1, 'reset_at': now + _LOGIN_WINDOW}
+
+
+def _clear_failures(ip: str):
+    _login_attempts.pop(ip, None)
+
+
+# ── Webhook helper ────────────────────────────────────────────────────────────
+
+def _fire_webhooks(event_type: str, data: dict):
+    """Fire matching active webhooks asynchronously."""
+    def _send(url, payload):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode(),
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            print(f'[Webhook] {url} failed: {e}')
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT url FROM webhooks WHERE active = 1 AND (events = '*' OR instr(events, ?) > 0)",
+                  (event_type,))
+        urls = [r['url'] for r in c.fetchall()]
+        conn.close()
+    except Exception:
+        return
+
+    payload = {'event': event_type, 'data': data,
+               'timestamp': datetime.now().isoformat()}
+    for url in urls:
+        threading.Thread(target=_send, args=(url, payload), daemon=True).start()
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -33,7 +104,6 @@ def login_required(f):
 
 
 def manager_required(f):
-    """Requires admin or manager role."""
     @wraps(f)
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
@@ -66,6 +136,10 @@ def login_page():
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
+    ip = request.remote_addr or 'unknown'
+    if _is_rate_limited(ip):
+        return jsonify({'error': 'Too many failed attempts — try again in 5 minutes'}), 429
+
     data = request.get_json()
     username = (data or {}).get('username', '').strip()
     password = (data or {}).get('password', '')
@@ -79,11 +153,14 @@ def api_login():
     conn.close()
 
     if not user or not check_password_hash(user['password_hash'], password):
+        _record_failure(ip)
         return jsonify({'error': 'Invalid username or password'}), 401
 
-    session['user_id'] = user['id']
+    _clear_failures(ip)
+    session.permanent = True
+    session['user_id']  = user['id']
     session['username'] = user['username']
-    session['role'] = user['role']
+    session['role']     = user['role']
     return jsonify({'status': 'ok', 'role': user['role'], 'username': user['username']})
 
 
@@ -101,13 +178,12 @@ def api_me():
     c.execute('SELECT badge_uid, employee_id FROM users WHERE id = ?', (session['user_id'],))
     row = c.fetchone()
     conn.close()
-    badge_uid   = row['badge_uid']   if row else None
-    employee_id = row['employee_id'] if row else None
     return jsonify({
+        'id':          session['user_id'],
         'username':    session['username'],
         'role':        session['role'],
-        'badge_uid':   badge_uid,
-        'employee_id': employee_id,
+        'badge_uid':   row['badge_uid']   if row else None,
+        'employee_id': row['employee_id'] if row else None,
     })
 
 
@@ -170,19 +246,14 @@ def api_status():
 def api_dashboard():
     conn = get_db()
     c = conn.cursor()
-
     c.execute('SELECT COUNT(*) AS n FROM items')
     total_items = c.fetchone()['n']
-
     c.execute('SELECT COALESCE(SUM(quantity), 0) AS n FROM items')
     total_qty = c.fetchone()['n']
-
     c.execute('SELECT COUNT(*) AS n FROM items WHERE quantity <= low_stock_threshold')
     low_stock = c.fetchone()['n']
-
     c.execute('SELECT COUNT(*) AS n FROM alerts WHERE is_read = 0')
     unread_alerts = c.fetchone()['n']
-
     conn.close()
     return jsonify({
         'total_items':     total_items,
@@ -199,7 +270,7 @@ def api_dashboard():
 def get_items():
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT * FROM items ORDER BY name')
+    c.execute('SELECT *, (quantity - reserved_qty) AS available_qty FROM items ORDER BY name')
     items = [dict(r) for r in c.fetchall()]
     conn.close()
     return jsonify(items)
@@ -209,19 +280,26 @@ def get_items():
 @manager_required
 def add_item():
     data = request.get_json()
-    qty  = data.get('quantity', 0)
+    item_id = (data.get('id') or '').strip()
+    name    = (data.get('name') or '').strip()
+    if not item_id or not name:
+        return jsonify({'error': 'id and name are required'}), 400
+    qty = max(0, int(data.get('quantity', 0)))
     conn = get_db()
     c = conn.cursor()
-    c.execute(
-        'INSERT INTO items (id, name, quantity, unit, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
-        (data['id'], data['name'], qty, data.get('unit', 'pcs'), data.get('low_stock_threshold', 5))
-    )
+    try:
+        c.execute(
+            'INSERT INTO items (id, name, quantity, unit, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
+            (item_id, name, qty, data.get('unit', 'pcs'), data.get('low_stock_threshold', 5))
+        )
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 400
     c.execute('''INSERT INTO transactions
                (item_id, action, quantity_change, previous_quantity, new_quantity,
                 performed_by, note, device_id)
                VALUES (?, 'item_added', ?, 0, ?, ?, ?, 'dashboard')''',
-              (data['id'], qty, qty, _dashboard_actor(),
-               f"Item created: {data['name']}"))
+              (item_id, qty, qty, _dashboard_actor(), f"Item created: {name}"))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'}), 201
@@ -235,19 +313,20 @@ def update_item(item_id):
     c = conn.cursor()
 
     if 'quantity' in data:
+        new_qty = int(data['quantity'])
+        if new_qty < 0:
+            conn.close()
+            return jsonify({'error': 'Quantity cannot be negative'}), 400
         c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
         row = c.fetchone()
         if row:
             prev_qty = row['quantity']
-            new_qty  = data['quantity']
-            c.execute(
-                '''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity,
-                    performed_by, note, device_id)
-                   VALUES (?, 'manual_adjust', ?, ?, ?, ?, ?, 'dashboard')''',
-                (item_id, new_qty - prev_qty, prev_qty, new_qty,
-                 _dashboard_actor(), 'Manual adjustment')
-            )
+            c.execute('''INSERT INTO transactions
+                       (item_id, action, quantity_change, previous_quantity, new_quantity,
+                        performed_by, note, device_id)
+                       VALUES (?, 'manual_adjust', ?, ?, ?, ?, ?, 'dashboard')''',
+                      (item_id, new_qty - prev_qty, prev_qty, new_qty,
+                       _dashboard_actor(), 'Manual adjustment'))
 
     allowed = ['name', 'quantity', 'unit', 'low_stock_threshold']
     fields  = [f for f in allowed if f in data]
@@ -280,7 +359,7 @@ def delete_item(item_id):
                         tag_uid, performed_by, note, device_id)
                        VALUES (?, 'tag_removed', 0, ?, ?, ?, ?, ?, 'dashboard')''',
                       (item_id, item['quantity'], item['quantity'], tag['uid'], who,
-                       f"Tag removed: item '{item['name']}' deleted (tag state was {tag['state']})"))
+                       f"Tag removed: item '{item['name']}' deleted (state was {tag['state']})"))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity,
                     performed_by, note, device_id)
@@ -288,6 +367,51 @@ def delete_item(item_id):
                   (item_id, item['quantity'], who, f"Item deleted: {item['name']}"))
     c.execute('DELETE FROM rfid_tags WHERE item_id = ?', (item_id,))
     c.execute('DELETE FROM items WHERE id = ?', (item_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+# ── Item stock reservation ─────────────────────────────────────────────────────
+
+@app.route('/api/items/<item_id>/reserve', methods=['POST'])
+@manager_required
+def reserve_stock(item_id):
+    data = request.get_json() or {}
+    qty  = int(data.get('qty', 1))
+    if qty < 1:
+        return jsonify({'error': 'qty must be >= 1'}), 400
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT quantity, reserved_qty FROM items WHERE id = ?', (item_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Item not found'}), 404
+    available = row['quantity'] - row['reserved_qty']
+    if qty > available:
+        conn.close()
+        return jsonify({'error': f'Only {available} units available (unreserved)'}), 400
+    c.execute('UPDATE items SET reserved_qty = reserved_qty + ? WHERE id = ?', (qty, item_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/items/<item_id>/reserve', methods=['DELETE'])
+@manager_required
+def unreserve_stock(item_id):
+    data = request.get_json() or {}
+    qty  = int(data.get('qty', 1))
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT reserved_qty FROM items WHERE id = ?', (item_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Item not found'}), 404
+    new_reserved = max(0, row['reserved_qty'] - qty)
+    c.execute('UPDATE items SET reserved_qty = ? WHERE id = ?', (new_reserved, item_id))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -436,7 +560,6 @@ def return_tag(uid):
     if not tag:
         conn.close()
         return jsonify({'error': 'Tag not found'}), 404
-
     if tag['state'] not in ('consumed', 'dispatched'):
         conn.close()
         return jsonify({'error': f'Tag is in state "{tag["state"]}" — only dispatched/consumed tags can be returned'}), 400
@@ -451,14 +574,48 @@ def return_tag(uid):
                uid, _dashboard_actor(), note))
     conn.commit()
     conn.close()
-
-    events.push({
-        'type':      'return_pending',
-        'item_id':   tag['item_id'],
-        'item_name': tag['item_name'],
-        'tag_uid':   uid,
-    })
+    events.push({'type': 'return_pending', 'item_id': tag['item_id'],
+                 'item_name': tag['item_name'], 'tag_uid': uid})
     return jsonify({'status': 'ok'})
+
+
+@app.route('/api/tags/<uid>/reassign', methods=['POST'])
+@admin_required
+def reassign_tag(uid):
+    """Transfer tag state/item to a new physical UID (e.g. damaged label replacement)."""
+    data    = request.get_json() or {}
+    new_uid = (data.get('new_uid') or '').strip().upper()
+    reason  = data.get('reason', 'Label replaced')
+    if not new_uid:
+        return jsonify({'error': 'new_uid is required'}), 400
+    if new_uid == uid.upper():
+        return jsonify({'error': 'new_uid must differ from current uid'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT t.*, i.name AS item_name FROM rfid_tags t JOIN items i ON t.item_id = i.id WHERE t.uid = ?', (uid,))
+    tag = c.fetchone()
+    if not tag:
+        conn.close()
+        return jsonify({'error': 'Tag not found'}), 404
+    c.execute('SELECT uid FROM rfid_tags WHERE uid = ?', (new_uid,))
+    if c.fetchone():
+        conn.close()
+        return jsonify({'error': f'Tag {new_uid} already registered'}), 409
+
+    c.execute('''INSERT INTO rfid_tags (uid, item_id, state, rack_location, previous_uid)
+               VALUES (?, ?, ?, ?, ?)''',
+              (new_uid, tag['item_id'], tag['state'], tag['rack_location'], uid))
+    c.execute('''INSERT INTO transactions
+               (item_id, action, quantity_change, previous_quantity, new_quantity,
+                tag_uid, performed_by, note, device_id)
+               VALUES (?, 'tag_reassigned', 0, ?, ?, ?, ?, ?, 'dashboard')''',
+              (tag['item_id'], 0, 0, new_uid, _dashboard_actor(),
+               f'Reassigned from {uid} → {new_uid}: {reason}'))
+    c.execute('DELETE FROM rfid_tags WHERE uid = ?', (uid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok', 'new_uid': new_uid})
 
 
 @app.route('/api/tags/<uid>', methods=['DELETE'])
@@ -484,7 +641,7 @@ def delete_tag(uid):
     return jsonify({'status': 'ok'})
 
 
-# ── User management (admin only) ──────────────────────────────────────────────
+# ── User management ───────────────────────────────────────────────────────────
 
 @app.route('/api/users', methods=['GET'])
 @admin_required
@@ -501,12 +658,17 @@ def get_users():
 @admin_required
 def create_user():
     data = request.get_json()
+    username = (data.get('username') or '').strip()
+    password = data.get('password', '')
+    if not username or not password:
+        return jsonify({'error': 'username and password required'}), 400
+    if len(password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters'}), 400
     conn = get_db()
     try:
         conn.execute(
             'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-            (data['username'], generate_password_hash(data['password']),
-             data.get('role', 'viewer'))
+            (username, generate_password_hash(password), data.get('role', 'viewer'))
         )
         conn.commit()
     except Exception as e:
@@ -550,10 +712,25 @@ def delete_user(user_id):
 def change_password(user_id):
     if session.get('role') != 'admin' and session.get('user_id') != user_id:
         return jsonify({'error': 'Forbidden'}), 403
-    data = request.get_json()
+    data = request.get_json() or {}
+    new_password = data.get('password', '')
+    if len(new_password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters'}), 400
+
+    # Non-admins must verify current password
+    if session.get('role') != 'admin':
+        current = data.get('current_password', '')
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT password_hash FROM users WHERE id = ?', (user_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row or not check_password_hash(row['password_hash'], current):
+            return jsonify({'error': 'Current password incorrect'}), 403
+
     conn = get_db()
     conn.execute('UPDATE users SET password_hash = ? WHERE id = ?',
-                 (generate_password_hash(data['password']), user_id))
+                 (generate_password_hash(new_password), user_id))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -564,25 +741,19 @@ def change_password(user_id):
 @app.route('/api/audit')
 @login_required
 def get_audit():
-    limit  = request.args.get('limit', 100, type=int)
+    limit   = request.args.get('limit', 100, type=int)
     filter_ = request.args.get('filter', 'all')
     conn = get_db()
     c = conn.cursor()
-
-    base_query = '''
-        SELECT t.*, i.name AS item_name
-        FROM transactions t
-        LEFT JOIN items i ON t.item_id = i.id
-    '''
+    base = '''SELECT t.*, i.name AS item_name FROM transactions t LEFT JOIN items i ON t.item_id = i.id'''
     if filter_ == 'dashboard':
-        base_query += " WHERE t.device_id = 'dashboard'"
+        base += " WHERE t.device_id = 'dashboard'"
     elif filter_ == 'physical':
-        base_query += " WHERE t.device_id != 'dashboard' AND t.device_id != 'system'"
+        base += " WHERE t.device_id != 'dashboard' AND t.device_id != 'system'"
     elif filter_ == 'admin':
-        base_query += " WHERE t.action IN ('item_added','item_deleted','tag_removed','return_requested','manual_adjust')"
-
-    base_query += ' ORDER BY t.timestamp DESC LIMIT ?'
-    c.execute(base_query, (limit,))
+        base += " WHERE t.action IN ('item_added','item_deleted','tag_removed','return_requested','manual_adjust','tag_reassigned')"
+    base += ' ORDER BY t.timestamp DESC LIMIT ?'
+    c.execute(base, (limit,))
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return jsonify(rows)
@@ -602,11 +773,11 @@ def get_workers():
     for w in rows:
         for did, sess in sessions.items():
             if sess['employee_id'] == w['employee_id']:
-                w['active_station'] = did
+                w['active_station']    = did
                 w['session_expires_in'] = sess['expires_in']
                 break
         else:
-            w['active_station'] = None
+            w['active_station']    = None
             w['session_expires_in'] = None
     return jsonify(rows)
 
@@ -618,14 +789,15 @@ def create_worker():
     employee_id = data.get('employee_id', '').upper().strip()
     name        = data.get('name', '').strip()
     role        = data.get('role', 'operator')
+    zone        = data.get('zone', 'general')
     if not employee_id or not name:
         return jsonify({'error': 'employee_id and name required'}), 400
     if not employee_id.startswith('EMP-'):
         return jsonify({'error': 'employee_id must start with EMP-'}), 400
     conn = get_db()
     try:
-        conn.execute('INSERT INTO workers (employee_id, name, role) VALUES (?, ?, ?)',
-                     (employee_id, name, role))
+        conn.execute('INSERT INTO workers (employee_id, name, role, zone) VALUES (?, ?, ?, ?)',
+                     (employee_id, name, role, zone))
         conn.commit()
     except Exception as e:
         conn.close()
@@ -637,7 +809,7 @@ def create_worker():
 @app.route('/api/workers/<int:worker_id>', methods=['PUT'])
 @manager_required
 def update_worker(worker_id):
-    data = request.get_json() or {}
+    data    = request.get_json() or {}
     allowed = ['name', 'role', 'active', 'zone']
     fields  = [f for f in allowed if f in data]
     if not fields:
@@ -695,15 +867,13 @@ def get_write_jobs():
 @app.route('/api/factory/jobs', methods=['POST'])
 @manager_required
 def create_write_job():
-    from datetime import datetime as dt
     data     = request.get_json() or {}
     item_id  = data.get('item_id')
     quantity = int(data.get('quantity', 1))
     if not item_id or quantity < 1:
         return jsonify({'error': 'item_id and quantity required'}), 400
 
-    batch_id = f"batch-{dt.now().strftime('%Y%m%d%H%M%S')}-{item_id}"
-
+    batch_id = f"batch-{datetime.now().strftime('%Y%m%d%H%M%S')}-{item_id}"
     conn = get_db()
     c = conn.cursor()
     c.execute('SELECT id FROM items WHERE id = ?', (item_id,))
@@ -716,15 +886,282 @@ def create_write_job():
               (batch_id, item_id, quantity, session.get('username', 'admin')))
     conn.commit()
     conn.close()
-
     mqtt_publish(TOPIC_FACTORY_JOB, json.dumps({
-        'batch_id': batch_id,
-        'item_id':  item_id,
-        'quantity': quantity,
+        'batch_id': batch_id, 'item_id': item_id, 'quantity': quantity,
     }))
     events.push({'type': 'job_created', 'batch_id': batch_id,
                  'item_id': item_id, 'quantity': quantity})
     return jsonify({'status': 'ok', 'batch_id': batch_id}), 201
+
+
+# ── Purchase Orders ───────────────────────────────────────────────────────────
+
+@app.route('/api/purchase-orders', methods=['GET'])
+@login_required
+def get_purchase_orders():
+    conn = get_db()
+    c = conn.cursor()
+    status_filter = request.args.get('status', '')
+    if status_filter:
+        c.execute('''SELECT p.*, i.name AS item_name FROM purchase_orders p
+                     LEFT JOIN items i ON p.item_id = i.id
+                     WHERE p.status = ? ORDER BY p.created_at DESC''', (status_filter,))
+    else:
+        c.execute('''SELECT p.*, i.name AS item_name FROM purchase_orders p
+                     LEFT JOIN items i ON p.item_id = i.id
+                     ORDER BY p.created_at DESC LIMIT 50''')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route('/api/purchase-orders', methods=['POST'])
+@manager_required
+def create_purchase_order():
+    data         = request.get_json() or {}
+    item_id      = data.get('item_id')
+    expected_qty = int(data.get('expected_qty', 0))
+    if not item_id or expected_qty < 1:
+        return jsonify({'error': 'item_id and expected_qty required'}), 400
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT id FROM items WHERE id = ?', (item_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': 'Item not found'}), 404
+    c.execute('''INSERT INTO purchase_orders (item_id, expected_qty, note, created_by)
+               VALUES (?, ?, ?, ?)''',
+              (item_id, expected_qty, data.get('note', ''),
+               session.get('username', 'admin')))
+    conn.commit()
+    po_id = c.lastrowid
+    conn.close()
+    return jsonify({'status': 'ok', 'id': po_id}), 201
+
+
+@app.route('/api/purchase-orders/<int:po_id>', methods=['PUT'])
+@manager_required
+def update_purchase_order(po_id):
+    data    = request.get_json() or {}
+    allowed = ['received_qty', 'status', 'note']
+    fields  = [f for f in allowed if f in data]
+    if not fields:
+        return jsonify({'error': 'Nothing to update'}), 400
+
+    # Auto-set status based on received_qty
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT expected_qty, received_qty FROM purchase_orders WHERE id = ?', (po_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'PO not found'}), 404
+
+    set_clause = ', '.join(f'{f} = ?' for f in fields)
+    values     = [data[f] for f in fields] + [po_id]
+    c.execute(f'UPDATE purchase_orders SET {set_clause} WHERE id = ?', values)
+
+    if 'received_qty' in data:
+        new_recv = int(data['received_qty'])
+        exp      = row['expected_qty']
+        if new_recv >= exp:
+            c.execute("UPDATE purchase_orders SET status = 'complete' WHERE id = ?", (po_id,))
+        elif new_recv > 0:
+            c.execute("UPDATE purchase_orders SET status = 'partial' WHERE id = ?", (po_id,))
+
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/purchase-orders/<int:po_id>', methods=['DELETE'])
+@manager_required
+def delete_purchase_order(po_id):
+    conn = get_db()
+    conn.execute('DELETE FROM purchase_orders WHERE id = ?', (po_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+# ── Webhooks ──────────────────────────────────────────────────────────────────
+
+@app.route('/api/webhooks', methods=['GET'])
+@admin_required
+def get_webhooks():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM webhooks ORDER BY created_at DESC')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route('/api/webhooks', methods=['POST'])
+@admin_required
+def create_webhook():
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    url  = (data.get('url') or '').strip()
+    if not name or not url:
+        return jsonify({'error': 'name and url required'}), 400
+    if not url.startswith(('http://', 'https://')):
+        return jsonify({'error': 'url must start with http:// or https://'}), 400
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('INSERT INTO webhooks (name, url, events) VALUES (?, ?, ?)',
+              (name, url, data.get('events', 'low_stock,security')))
+    conn.commit()
+    wh_id = c.lastrowid
+    conn.close()
+    return jsonify({'status': 'ok', 'id': wh_id}), 201
+
+
+@app.route('/api/webhooks/<int:wh_id>', methods=['PUT'])
+@admin_required
+def update_webhook(wh_id):
+    data    = request.get_json() or {}
+    allowed = ['name', 'url', 'events', 'active']
+    fields  = [f for f in allowed if f in data]
+    if not fields:
+        return jsonify({'error': 'Nothing to update'}), 400
+    set_clause = ', '.join(f'{f} = ?' for f in fields)
+    values     = [data[f] for f in fields] + [wh_id]
+    conn = get_db()
+    conn.execute(f'UPDATE webhooks SET {set_clause} WHERE id = ?', values)
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/webhooks/<int:wh_id>', methods=['DELETE'])
+@admin_required
+def delete_webhook(wh_id):
+    conn = get_db()
+    conn.execute('DELETE FROM webhooks WHERE id = ?', (wh_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/webhooks/<int:wh_id>/test', methods=['POST'])
+@admin_required
+def test_webhook(wh_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT url FROM webhooks WHERE id = ?', (wh_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'Webhook not found'}), 404
+    _fire_webhooks('test', {'message': 'Test ping from Smart Inventory System'})
+    return jsonify({'status': 'ok', 'message': 'Test payload sent'})
+
+
+# ── Export / Import ───────────────────────────────────────────────────────────
+
+@app.route('/api/export/backup')
+@admin_required
+def export_backup():
+    """Download a copy of the live SQLite database."""
+    fd, tmp_path = tempfile.mkstemp(suffix='.db')
+    os.close(fd)
+    shutil.copy2(DB_PATH, tmp_path)
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        return response
+
+    filename = f'inventory_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db'
+    return send_file(tmp_path, as_attachment=True, download_name=filename,
+                     mimetype='application/octet-stream')
+
+
+@app.route('/api/export/items')
+@login_required
+def export_items_csv():
+    """Export items table as CSV."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT id, name, quantity, reserved_qty, unit, low_stock_threshold FROM items ORDER BY name')
+    rows = c.fetchall()
+    conn.close()
+
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(['id', 'name', 'quantity', 'reserved_qty', 'unit', 'low_stock_threshold'])
+    for r in rows:
+        w.writerow([r['id'], r['name'], r['quantity'], r['reserved_qty'],
+                    r['unit'], r['low_stock_threshold']])
+    out.seek(0)
+    return Response(out.getvalue(), mimetype='text/csv',
+                    headers={'Content-Disposition': 'attachment; filename=items.csv'})
+
+
+@app.route('/api/import/items', methods=['POST'])
+@manager_required
+def import_items_csv():
+    """Import items from uploaded CSV. Columns: id, name, quantity, unit, low_stock_threshold."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+    f = request.files['file']
+    if not f.filename.endswith('.csv'):
+        return jsonify({'error': 'File must be a .csv'}), 400
+
+    text    = f.stream.read().decode('utf-8-sig')
+    reader  = csv.DictReader(io.StringIO(text))
+    who     = _dashboard_actor()
+    created = 0
+    updated = 0
+    errors  = []
+
+    conn = get_db()
+    c = conn.cursor()
+    for i, row in enumerate(reader, start=2):
+        item_id = (row.get('id') or '').strip()
+        name    = (row.get('name') or '').strip()
+        if not item_id or not name:
+            errors.append(f'Row {i}: id and name are required')
+            continue
+        try:
+            qty       = max(0, int(row.get('quantity', 0)))
+            unit      = row.get('unit', 'pcs') or 'pcs'
+            threshold = max(0, int(row.get('low_stock_threshold', 5)))
+        except ValueError:
+            errors.append(f'Row {i}: invalid numeric value')
+            continue
+
+        c.execute('SELECT id, quantity FROM items WHERE id = ?', (item_id,))
+        existing = c.fetchone()
+        if existing:
+            c.execute('''UPDATE items SET name=?, quantity=?, unit=?, low_stock_threshold=?,
+                         updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+                      (name, qty, unit, threshold, item_id))
+            if qty != existing['quantity']:
+                c.execute('''INSERT INTO transactions
+                           (item_id, action, quantity_change, previous_quantity, new_quantity,
+                            performed_by, note, device_id)
+                           VALUES (?, 'manual_adjust', ?, ?, ?, ?, ?, 'dashboard')''',
+                          (item_id, qty - existing['quantity'], existing['quantity'], qty,
+                           who, 'CSV import update'))
+            updated += 1
+        else:
+            c.execute('INSERT INTO items (id, name, quantity, unit, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
+                      (item_id, name, qty, unit, threshold))
+            c.execute('''INSERT INTO transactions
+                       (item_id, action, quantity_change, previous_quantity, new_quantity,
+                        performed_by, note, device_id)
+                       VALUES (?, 'item_added', ?, 0, ?, ?, ?, 'dashboard')''',
+                      (item_id, qty, qty, who, 'CSV import'))
+            created += 1
+
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok', 'created': created, 'updated': updated, 'errors': errors})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

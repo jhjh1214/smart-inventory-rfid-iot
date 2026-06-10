@@ -40,28 +40,34 @@ def _on_mqtt_msg(topic, msg):
 
 # ── WiFi ──────────────────────────────────────────────────────────────────────
 def connect_wifi():
+    """Try each network in WIFI_NETWORKS in order; set MQTT_BROKER on success."""
     sta = network.WLAN(network.STA_IF)
     sta.active(True)
     if sta.isconnected():
         return
-    print('Connecting to WiFi...')
-    sta.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
-    for _ in range(20):
+    for net in config.WIFI_NETWORKS:
+        print('Trying WiFi:', net['ssid'])
+        sta.connect(net['ssid'], net['password'])
+        for _ in range(20):
+            if sta.isconnected():
+                break
+            time.sleep(1)
         if sta.isconnected():
-            break
-        time.sleep(1)
-    if sta.isconnected():
-        print('WiFi OK:', sta.ifconfig()[0])
-    else:
-        print('WiFi FAILED — continuing without network')
+            config.MQTT_BROKER = net['broker']
+            print('WiFi OK:', sta.ifconfig()[0], '  broker:', config.MQTT_BROKER)
+            return
+        sta.disconnect()
+    print('WiFi FAILED — no networks reachable')
 
 # ── MQTT ──────────────────────────────────────────────────────────────────────
 def connect_mqtt():
+    user = getattr(config, 'MQTT_USER', '')
+    pw   = getattr(config, 'MQTT_PASSWORD', '')
     client = MQTTClient(config.DEVICE_ID, config.MQTT_BROKER,
-                        config.MQTT_PORT, keepalive=60)
+                        config.MQTT_PORT, keepalive=60,
+                        user=user or None, password=pw or None)
     client.set_callback(_on_mqtt_msg)
     client.connect()
-    # Subscribe only if a factory_writer reader is present
     if any(r['role'] == 'factory_writer' for r in config.READERS):
         client.subscribe(config.TOPIC_FACTORY_JOB)
     print('[MQTT] Connected to', config.MQTT_BROKER)
@@ -90,14 +96,15 @@ def run():
     global _job, _job_written
 
     connect_wifi()
-    readers   = init_readers()
-    # Per-reader last-scan time: {idx: {uid: timestamp}}
-    cooldowns = [{} for _ in config.READERS]
-    status_t  = 0
+    readers            = init_readers()
+    cooldowns          = [{} for _ in config.READERS]
+    status_t           = 0
+    _reconnect_delay   = 5
 
     while True:
         try:
             mqtt = connect_mqtt()
+            _reconnect_delay = 5
 
             while True:
                 now = time.time()
@@ -112,6 +119,7 @@ def run():
                     mqtt.publish(config.TOPIC_STATUS, json.dumps({
                         'device_id': config.DEVICE_ID,
                         'roles':     [r['role'] for r in config.READERS],
+                        'firmware':  getattr(config, 'FIRMWARE_VERSION', 'unknown'),
                         'timestamp': now,
                     }))
 
@@ -198,7 +206,8 @@ def run():
                 time.sleep_ms(50)
 
         except OSError as e:
-            print('[MQTT] Lost connection, reconnecting in 5 s:', e)
-            time.sleep(5)
+            print('[MQTT] Lost connection:', e, '— retry in', _reconnect_delay, 's')
+            time.sleep(_reconnect_delay)
+            _reconnect_delay = min(_reconnect_delay * 2, 120)
 
 run()

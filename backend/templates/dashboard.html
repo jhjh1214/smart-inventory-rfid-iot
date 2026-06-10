@@ -309,14 +309,15 @@
         <div class="hidden">
           <p class="text-xs text-slate-500 mb-3">
             <strong>Legacy cycle (1-reader demo):</strong>
-            <span class="font-mono text-indigo-600">out → in → consumed → return_pending → returned → in → …</span>
+            <span class="font-mono text-indigo-600">out → in → consumed → return_pending → in → …</span>
+            <span class="text-slate-400 ml-1">(scan confirms return and restores to warehouse in one step)</span>
           </p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
             <div class="flex items-start gap-2"><span class="badge badge-info shrink-0">out</span><span class="text-slate-500">Tag registered; item not yet received into stock.</span></div>
             <div class="flex items-start gap-2"><span class="badge badge-success shrink-0">in</span><span class="text-slate-500">Item in warehouse / active stock. Next scan will dispatch it.</span></div>
             <div class="flex items-start gap-2"><span class="badge badge-neutral shrink-0">consumed</span><span class="text-slate-500">Item dispatched / used up. Tag inactive until admin requests return.</span></div>
             <div class="flex items-start gap-2"><span class="badge badge-warning shrink-0">return pending</span><span class="text-slate-500">Admin requested return. Stock unchanged until physical scan confirms.</span></div>
-            <div class="flex items-start gap-2"><span class="badge badge-orange shrink-0">returned</span><span class="text-slate-500">Return confirmed by physical scan. Scan again to restock (→ in).</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-orange shrink-0">returned</span><span class="text-slate-500">Pipeline mode only: item back at warehouse dock, awaiting racking or dispatch.</span></div>
             <div class="flex items-start gap-2"><span class="badge badge-info shrink-0">tagged</span><span class="text-slate-500">New tag written at factory (pipeline mode).</span></div>
             <div class="flex items-start gap-2"><span class="badge badge-warning shrink-0">in transit</span><span class="text-slate-500">Left factory floor, en route to warehouse (pipeline mode).</span></div>
             <div class="flex items-start gap-2"><span class="badge badge-info shrink-0">received</span><span class="text-slate-500">Arrived at warehouse dock, awaiting racking (pipeline mode).</span></div>

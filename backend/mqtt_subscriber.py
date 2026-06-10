@@ -503,7 +503,7 @@ def _handle_legacy_scan(client, payload):
     else:
         current_state = row['state']
 
-    if current_state not in ('out', 'in', 'consumed', 'return_pending', 'returned'):
+    if current_state not in ('out', 'in', 'consumed', 'return_pending'):
         conn.close()
         return
 
@@ -523,34 +523,18 @@ def _handle_legacy_scan(client, payload):
         new_qty  = prev_qty + 1
         c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                   (new_qty, item_id))
+        # Go straight to 'in' — item is physically back in warehouse, ready for re-dispatch
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
-                  ('returned', tag_uid))
+                  ('in', tag_uid))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note)
                    VALUES (?, 'return_confirmed', 1, ?, ?, ?, ?)''',
-                  (item_id, prev_qty, new_qty, tag_uid, 'Return confirmed via physical scan'))
+                  (item_id, prev_qty, new_qty, tag_uid, 'Return confirmed — item back in warehouse stock'))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
         events.push({'type': 'scan', 'item_id': item_id, 'item_name': item['name'],
                      'action': 'return_confirmed', 'quantity': new_qty,
-                     'tag_uid': tag_uid, 'tag_state': 'returned'})
-        return
-
-    if current_state == 'returned':
-        # Item physically back and confirmed — reactivate tag into circulation, qty unchanged
-        qty = item['quantity']
-        c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
-                  ('in', tag_uid))
-        c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note)
-                   VALUES (?, 'restock', 0, ?, ?, ?, ?)''',
-                  (item_id, qty, qty, tag_uid, 'Tag reactivated — item back in circulation'))
-        _attach_worker(c, c.lastrowid, payload.get('device_id'))
-        conn.commit()
-        conn.close()
-        events.push({'type': 'scan', 'item_id': item_id, 'item_name': item['name'],
-                     'action': 'restock', 'quantity': qty,
                      'tag_uid': tag_uid, 'tag_state': 'in'})
         return
 

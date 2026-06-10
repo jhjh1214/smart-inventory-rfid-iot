@@ -365,9 +365,16 @@ def delete_item(item_id):
                     performed_by, note, device_id)
                    VALUES (?, 'item_deleted', 0, ?, 0, ?, ?, 'dashboard')''',
                   (item_id, item['quantity'], who, f"Item deleted: {item['name']}"))
+    # Commit audit records first so the subsequent PRAGMA change takes effect
+    # (SQLite ignores PRAGMA foreign_keys inside an active transaction)
+    conn.commit()
+    conn.execute('PRAGMA foreign_keys = OFF')
     c.execute('DELETE FROM rfid_tags WHERE item_id = ?', (item_id,))
+    c.execute('DELETE FROM purchase_orders WHERE item_id = ?', (item_id,))
+    c.execute('DELETE FROM write_jobs WHERE item_id = ?', (item_id,))
     c.execute('DELETE FROM items WHERE id = ?', (item_id,))
     conn.commit()
+    conn.execute('PRAGMA foreign_keys = ON')
     conn.close()
     return jsonify({'status': 'ok'})
 
@@ -429,7 +436,7 @@ def get_transactions():
         SELECT t.*, i.name AS item_name
         FROM transactions t
         LEFT JOIN items i ON t.item_id = i.id
-        ORDER BY t.timestamp DESC
+        ORDER BY t.timestamp DESC, t.id DESC
         LIMIT ?
     ''', (limit,))
     rows = [dict(r) for r in c.fetchall()]
@@ -448,7 +455,7 @@ def get_alerts():
         SELECT a.*, i.name AS item_name
         FROM alerts a
         LEFT JOIN items i ON a.item_id = i.id
-        ORDER BY a.timestamp DESC
+        ORDER BY a.timestamp DESC, a.id DESC
         LIMIT 50
     ''')
     rows = [dict(r) for r in c.fetchall()]
@@ -752,7 +759,7 @@ def get_audit():
         base += " WHERE t.device_id != 'dashboard' AND t.device_id != 'system'"
     elif filter_ == 'admin':
         base += " WHERE t.action IN ('item_added','item_deleted','tag_removed','return_requested','manual_adjust','tag_reassigned')"
-    base += ' ORDER BY t.timestamp DESC LIMIT ?'
+    base += ' ORDER BY t.timestamp DESC, t.id DESC LIMIT ?'
     c.execute(base, (limit,))
     rows = [dict(r) for r in c.fetchall()]
     conn.close()

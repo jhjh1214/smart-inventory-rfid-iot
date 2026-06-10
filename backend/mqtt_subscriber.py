@@ -95,7 +95,7 @@ def _load_sessions():
                 'employee_id': row['employee_id'],
                 'name':        row['name'],
                 'role':        row['role'],
-                'zone':        row.get('zone', 'general'),
+                'zone':        row['zone'] if row['zone'] else 'general',
                 'expires':     row['expires_at'],
             }
         if rows:
@@ -278,7 +278,7 @@ def _handle_worker_badge(source_topic, payload):
         'employee_id': employee_id,
         'name':        worker['name'],
         'role':        worker['role'],
-        'zone':        worker.get('zone', 'general'),
+        'zone':        worker['zone'] if worker['zone'] else 'general',
         'expires':     expires,
     }
     _worker_sessions[device_id] = sess

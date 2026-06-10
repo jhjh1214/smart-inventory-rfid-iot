@@ -298,18 +298,39 @@
 
     <!-- ── TAB: RFID Tags ──────────────────────────────────────────────── -->
     <div id="tab-tags" class="tab-content p-6 space-y-4">
+
+      <!-- State legend -->
+      <div class="card">
+        <div class="flex items-center justify-between mb-3 cursor-pointer select-none"
+             onclick="this.nextElementSibling.classList.toggle('hidden')">
+          <h2 class="card-title">Tag State Reference</h2>
+          <span class="text-xs text-slate-400">click to expand ▾</span>
+        </div>
+        <div class="hidden">
+          <p class="text-xs text-slate-500 mb-3">
+            <strong>Legacy cycle (1-reader demo):</strong>
+            <span class="font-mono text-indigo-600">out → in → consumed → return_pending → returned → in → …</span>
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            <div class="flex items-start gap-2"><span class="badge badge-info shrink-0">out</span><span class="text-slate-500">Tag registered; item not yet received into stock.</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-success shrink-0">in</span><span class="text-slate-500">Item in warehouse / active stock. Next scan will dispatch it.</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-neutral shrink-0">consumed</span><span class="text-slate-500">Item dispatched / used up. Tag inactive until admin requests return.</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-warning shrink-0">return pending</span><span class="text-slate-500">Admin requested return. Stock unchanged until physical scan confirms.</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-orange shrink-0">returned</span><span class="text-slate-500">Return confirmed by physical scan. Scan again to restock (→ in).</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-info shrink-0">tagged</span><span class="text-slate-500">New tag written at factory (pipeline mode).</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-warning shrink-0">in transit</span><span class="text-slate-500">Left factory floor, en route to warehouse (pipeline mode).</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-info shrink-0">received</span><span class="text-slate-500">Arrived at warehouse dock, awaiting racking (pipeline mode).</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-success shrink-0">racked</span><span class="text-slate-500">Placed on warehouse shelf at a specific rack location.</span></div>
+            <div class="flex items-start gap-2"><span class="badge badge-neutral shrink-0">dispatched</span><span class="text-slate-500">Sent to customer. Terminal state unless returned.</span></div>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="flex items-center justify-between mb-2">
           <div>
-            <h2 class="card-title">RFID Tag Lifecycle</h2>
-            <p class="text-xs text-slate-400 mt-0.5">All tags tracked through the full supply chain pipeline.</p>
-          </div>
-          <div class="flex flex-wrap gap-1.5 text-xs justify-end max-w-xs">
-            <span class="badge badge-info">tagged</span>
-            <span class="badge badge-warning">in transit</span>
-            <span class="badge badge-success">racked</span>
-            <span class="badge badge-neutral">dispatched</span>
-            <span class="badge badge-orange">returned</span>
+            <h2 class="card-title">Active Tags</h2>
+            <p class="text-xs text-slate-400 mt-0.5">All tags tracked through the supply chain. Every state change is logged.</p>
           </div>
         </div>
         <div class="table-toolbar">

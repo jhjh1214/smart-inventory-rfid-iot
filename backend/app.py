@@ -184,13 +184,18 @@ def get_items():
 @manager_required
 def add_item():
     data = request.get_json()
+    qty  = data.get('quantity', 0)
     conn = get_db()
     c = conn.cursor()
     c.execute(
         'INSERT INTO items (id, name, quantity, unit, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
-        (data['id'], data['name'], data.get('quantity', 0),
-         data.get('unit', 'pcs'), data.get('low_stock_threshold', 5))
+        (data['id'], data['name'], qty, data.get('unit', 'pcs'), data.get('low_stock_threshold', 5))
     )
+    c.execute('''INSERT INTO transactions
+               (item_id, action, quantity_change, previous_quantity, new_quantity, performed_by, note)
+               VALUES (?, 'item_added', ?, 0, ?, ?, ?)''',
+              (data['id'], qty, qty, session.get('username', 'admin'),
+               f"Item created: {data['name']}"))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'}), 201
@@ -238,6 +243,23 @@ def update_item(item_id):
 def delete_item(item_id):
     conn = get_db()
     c = conn.cursor()
+    c.execute('SELECT name, quantity FROM items WHERE id = ?', (item_id,))
+    item = c.fetchone()
+    if item:
+        who = session.get('username', 'admin')
+        c.execute('SELECT uid, state FROM rfid_tags WHERE item_id = ?', (item_id,))
+        for tag in c.fetchall():
+            c.execute('''INSERT INTO transactions
+                       (item_id, action, quantity_change, previous_quantity, new_quantity,
+                        tag_uid, performed_by, note)
+                       VALUES (?, 'tag_removed', 0, ?, ?, ?, ?, ?)''',
+                      (item_id, item['quantity'], item['quantity'], tag['uid'], who,
+                       f"Tag removed: item '{item['name']}' deleted (tag state was {tag['state']})"))
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity,
+                    performed_by, note)
+                   VALUES (?, 'item_deleted', 0, ?, 0, ?, ?)''',
+                  (item_id, item['quantity'], who, f"Item deleted: {item['name']}"))
     c.execute('DELETE FROM rfid_tags WHERE item_id = ?', (item_id,))
     c.execute('DELETE FROM items WHERE id = ?', (item_id,))
     conn.commit()
@@ -416,7 +438,20 @@ def return_tag(uid):
 @admin_required
 def delete_tag(uid):
     conn = get_db()
-    conn.execute('DELETE FROM rfid_tags WHERE uid = ?', (uid,))
+    c = conn.cursor()
+    c.execute('''SELECT t.*, i.name AS item_name, i.quantity
+                 FROM rfid_tags t JOIN items i ON t.item_id = i.id
+                 WHERE t.uid = ?''', (uid,))
+    tag = c.fetchone()
+    if tag:
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity,
+                    tag_uid, performed_by, note)
+                   VALUES (?, 'tag_removed', 0, ?, ?, ?, ?, ?)''',
+                  (tag['item_id'], tag['quantity'], tag['quantity'], uid,
+                   session.get('username', 'admin'),
+                   f"Tag removed: state was '{tag['state']}' for '{tag['item_name']}'"))
+    c.execute('DELETE FROM rfid_tags WHERE uid = ?', (uid,))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})

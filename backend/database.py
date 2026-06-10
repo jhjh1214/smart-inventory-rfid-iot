@@ -98,6 +98,11 @@ def init_db():
         "ALTER TABLE rfid_tags ADD COLUMN rack_location TEXT",
         "ALTER TABLE transactions ADD COLUMN performed_by TEXT DEFAULT 'system'",
         "ALTER TABLE transactions ADD COLUMN note TEXT",
+        # Accountability layer
+        "ALTER TABLE transactions ADD COLUMN device_id TEXT DEFAULT 'dashboard'",
+        "ALTER TABLE users ADD COLUMN badge_uid TEXT",
+        "ALTER TABLE users ADD COLUMN employee_id TEXT",
+        "ALTER TABLE workers ADD COLUMN zone TEXT DEFAULT 'general'",
     ]
     for sql in migrations:
         try:

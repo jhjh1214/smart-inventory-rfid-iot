@@ -96,7 +96,32 @@ def api_logout():
 @app.route('/api/me')
 @login_required
 def api_me():
-    return jsonify({'username': session['username'], 'role': session['role']})
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT badge_uid, employee_id FROM users WHERE id = ?', (session['user_id'],))
+    row = c.fetchone()
+    conn.close()
+    badge_uid   = row['badge_uid']   if row else None
+    employee_id = row['employee_id'] if row else None
+    return jsonify({
+        'username':    session['username'],
+        'role':        session['role'],
+        'badge_uid':   badge_uid,
+        'employee_id': employee_id,
+    })
+
+
+def _dashboard_actor():
+    """Return 'username [badge:uid]' if badge linked, else 'username'."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT badge_uid FROM users WHERE id = ?', (session.get('user_id'),))
+    row = c.fetchone()
+    conn.close()
+    username = session.get('username', 'admin')
+    if row and row['badge_uid']:
+        return f'{username} [badge:{row["badge_uid"]}]'
+    return username
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -192,9 +217,10 @@ def add_item():
         (data['id'], data['name'], qty, data.get('unit', 'pcs'), data.get('low_stock_threshold', 5))
     )
     c.execute('''INSERT INTO transactions
-               (item_id, action, quantity_change, previous_quantity, new_quantity, performed_by, note)
-               VALUES (?, 'item_added', ?, 0, ?, ?, ?)''',
-              (data['id'], qty, qty, session.get('username', 'admin'),
+               (item_id, action, quantity_change, previous_quantity, new_quantity,
+                performed_by, note, device_id)
+               VALUES (?, 'item_added', ?, 0, ?, ?, ?, 'dashboard')''',
+              (data['id'], qty, qty, _dashboard_actor(),
                f"Item created: {data['name']}"))
     conn.commit()
     conn.close()
@@ -217,10 +243,10 @@ def update_item(item_id):
             c.execute(
                 '''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity,
-                    performed_by, note)
-                   VALUES (?, 'manual_adjust', ?, ?, ?, ?, ?)''',
+                    performed_by, note, device_id)
+                   VALUES (?, 'manual_adjust', ?, ?, ?, ?, ?, 'dashboard')''',
                 (item_id, new_qty - prev_qty, prev_qty, new_qty,
-                 session.get('username', 'admin'), 'Manual adjustment')
+                 _dashboard_actor(), 'Manual adjustment')
             )
 
     allowed = ['name', 'quantity', 'unit', 'low_stock_threshold']
@@ -246,19 +272,19 @@ def delete_item(item_id):
     c.execute('SELECT name, quantity FROM items WHERE id = ?', (item_id,))
     item = c.fetchone()
     if item:
-        who = session.get('username', 'admin')
+        who = _dashboard_actor()
         c.execute('SELECT uid, state FROM rfid_tags WHERE item_id = ?', (item_id,))
         for tag in c.fetchall():
             c.execute('''INSERT INTO transactions
                        (item_id, action, quantity_change, previous_quantity, new_quantity,
-                        tag_uid, performed_by, note)
-                       VALUES (?, 'tag_removed', 0, ?, ?, ?, ?, ?)''',
+                        tag_uid, performed_by, note, device_id)
+                       VALUES (?, 'tag_removed', 0, ?, ?, ?, ?, ?, 'dashboard')''',
                       (item_id, item['quantity'], item['quantity'], tag['uid'], who,
                        f"Tag removed: item '{item['name']}' deleted (tag state was {tag['state']})"))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity,
-                    performed_by, note)
-                   VALUES (?, 'item_deleted', 0, ?, 0, ?, ?)''',
+                    performed_by, note, device_id)
+                   VALUES (?, 'item_deleted', 0, ?, 0, ?, ?, 'dashboard')''',
                   (item_id, item['quantity'], who, f"Item deleted: {item['name']}"))
     c.execute('DELETE FROM rfid_tags WHERE item_id = ?', (item_id,))
     c.execute('DELETE FROM items WHERE id = ?', (item_id,))
@@ -418,10 +444,11 @@ def return_tag(uid):
     c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
               ('return_pending', uid))
     c.execute('''INSERT INTO transactions
-               (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, performed_by, note)
-               VALUES (?, 'return_requested', 0, ?, ?, ?, ?, ?)''',
+               (item_id, action, quantity_change, previous_quantity, new_quantity,
+                tag_uid, performed_by, note, device_id)
+               VALUES (?, 'return_requested', 0, ?, ?, ?, ?, ?, 'dashboard')''',
               (tag['item_id'], tag['quantity'], tag['quantity'],
-               uid, session.get('username', 'admin'), note))
+               uid, _dashboard_actor(), note))
     conn.commit()
     conn.close()
 
@@ -446,10 +473,10 @@ def delete_tag(uid):
     if tag:
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity,
-                    tag_uid, performed_by, note)
-                   VALUES (?, 'tag_removed', 0, ?, ?, ?, ?, ?)''',
+                    tag_uid, performed_by, note, device_id)
+                   VALUES (?, 'tag_removed', 0, ?, ?, ?, ?, ?, 'dashboard')''',
                   (tag['item_id'], tag['quantity'], tag['quantity'], uid,
-                   session.get('username', 'admin'),
+                   _dashboard_actor(),
                    f"Tag removed: state was '{tag['state']}' for '{tag['item_name']}'"))
     c.execute('DELETE FROM rfid_tags WHERE uid = ?', (uid,))
     conn.commit()
@@ -464,7 +491,7 @@ def delete_tag(uid):
 def get_users():
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT id, username, role, created_at FROM users ORDER BY created_at')
+    c.execute('SELECT id, username, role, created_at, badge_uid, employee_id FROM users ORDER BY created_at')
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return jsonify(rows)
@@ -489,6 +516,35 @@ def create_user():
     return jsonify({'status': 'ok'}), 201
 
 
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+@admin_required
+def update_user(user_id):
+    data    = request.get_json() or {}
+    allowed = ['role', 'badge_uid', 'employee_id']
+    fields  = [f for f in allowed if f in data]
+    if not fields:
+        return jsonify({'error': 'Nothing to update'}), 400
+    set_clause = ', '.join(f'{f} = ?' for f in fields)
+    values     = [data[f] for f in fields] + [user_id]
+    conn = get_db()
+    conn.execute(f'UPDATE users SET {set_clause} WHERE id = ?', values)
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@admin_required
+def delete_user(user_id):
+    if user_id == session.get('user_id'):
+        return jsonify({'error': 'Cannot delete your own account'}), 400
+    conn = get_db()
+    conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
 @app.route('/api/users/<int:user_id>/password', methods=['PUT'])
 @login_required
 def change_password(user_id):
@@ -501,6 +557,35 @@ def change_password(user_id):
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
+
+
+# ── Audit Trail ───────────────────────────────────────────────────────────────
+
+@app.route('/api/audit')
+@login_required
+def get_audit():
+    limit  = request.args.get('limit', 100, type=int)
+    filter_ = request.args.get('filter', 'all')
+    conn = get_db()
+    c = conn.cursor()
+
+    base_query = '''
+        SELECT t.*, i.name AS item_name
+        FROM transactions t
+        LEFT JOIN items i ON t.item_id = i.id
+    '''
+    if filter_ == 'dashboard':
+        base_query += " WHERE t.device_id = 'dashboard'"
+    elif filter_ == 'physical':
+        base_query += " WHERE t.device_id != 'dashboard' AND t.device_id != 'system'"
+    elif filter_ == 'admin':
+        base_query += " WHERE t.action IN ('item_added','item_deleted','tag_removed','return_requested','manual_adjust')"
+
+    base_query += ' ORDER BY t.timestamp DESC LIMIT ?'
+    c.execute(base_query, (limit,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return jsonify(rows)
 
 
 # ── Workers ───────────────────────────────────────────────────────────────────
@@ -553,7 +638,7 @@ def create_worker():
 @manager_required
 def update_worker(worker_id):
     data = request.get_json() or {}
-    allowed = ['name', 'role', 'active']
+    allowed = ['name', 'role', 'active', 'zone']
     fields  = [f for f in allowed if f in data]
     if not fields:
         return jsonify({'error': 'Nothing to update'}), 400

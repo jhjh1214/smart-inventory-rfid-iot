@@ -246,9 +246,10 @@ def _handle_factory_written(client, payload):
     c.execute('INSERT INTO rfid_tags (uid, item_id, state) VALUES (?, ?, ?)',
               (tag_uid, item_id, 'tagged'))
     c.execute('''INSERT INTO transactions
-               (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note)
-               VALUES (?, 'tag_write', 0, ?, ?, ?, ?)''',
-              (item_id, item['quantity'], item['quantity'], tag_uid, f'batch:{batch_id}'))
+               (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
+               VALUES (?, 'tag_write', 0, ?, ?, ?, ?, ?)''',
+              (item_id, item['quantity'], item['quantity'], tag_uid, f'batch:{batch_id}',
+               payload.get('device_id', 'unknown')))
     _attach_worker(c, c.lastrowid, payload.get('device_id'))
     if batch_id:
         c.execute('UPDATE write_jobs SET written = written + 1 WHERE batch_id = ?', (batch_id,))
@@ -280,9 +281,10 @@ def _handle_factory_exit(client, payload):
             c.execute('INSERT INTO rfid_tags (uid, item_id, state) VALUES (?, ?, ?)',
                       (tag_uid, item_id, 'in_transit'))
             c.execute('''INSERT INTO transactions
-                       (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid)
-                       VALUES (?, 'factory_exit', 0, ?, ?, ?)''',
-                      (item_id, item['quantity'], item['quantity'], tag_uid))
+                       (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
+                       VALUES (?, 'factory_exit', 0, ?, ?, ?, ?)''',
+                      (item_id, item['quantity'], item['quantity'], tag_uid,
+                       payload.get('device_id', 'unknown')))
             _attach_worker(c, c.lastrowid, payload.get('device_id'))
             conn.commit()
             conn.close()
@@ -297,9 +299,10 @@ def _handle_factory_exit(client, payload):
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('in_transit', tag_uid))
         c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid)
-                   VALUES (?, 'factory_exit', 0, ?, ?, ?)''',
-                  (tag['item_id'], tag['quantity'], tag['quantity'], tag_uid))
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
+                   VALUES (?, 'factory_exit', 0, ?, ?, ?, ?)''',
+                  (tag['item_id'], tag['quantity'], tag['quantity'], tag_uid,
+                   payload.get('device_id', 'unknown')))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
@@ -340,9 +343,9 @@ def _handle_warehouse_gate(client, payload):
             c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                       (new_qty, item_id))
             c.execute('''INSERT INTO transactions
-                       (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid)
-                       VALUES (?, 'warehouse_receive', 1, ?, ?, ?)''',
-                      (item_id, prev, new_qty, tag_uid))
+                       (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
+                       VALUES (?, 'warehouse_receive', 1, ?, ?, ?, ?)''',
+                      (item_id, prev, new_qty, tag_uid, payload.get('device_id', 'unknown')))
             _attach_worker(c, c.lastrowid, payload.get('device_id'))
             conn.commit()
             conn.close()
@@ -364,9 +367,9 @@ def _handle_warehouse_gate(client, payload):
         c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                   (new_qty, item_id))
         c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid)
-                   VALUES (?, 'warehouse_receive', 1, ?, ?, ?)''',
-                  (item_id, prev, new_qty, tag_uid))
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
+                   VALUES (?, 'warehouse_receive', 1, ?, ?, ?, ?)''',
+                  (item_id, prev, new_qty, tag_uid, payload.get('device_id', 'unknown')))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
@@ -376,17 +379,27 @@ def _handle_warehouse_gate(client, payload):
                      'item_name': tag['item_name'], 'quantity': new_qty})
 
     elif state in ('received', 'racked', 'returned', 'in'):
-        prev    = tag['quantity']
-        new_qty = max(0, prev - 1)
+        prev      = tag['quantity']
+        new_qty   = max(0, prev - 1)
+        device_id = payload.get('device_id', 'unknown')
+        worker    = _get_current_worker(device_id)
+        if not worker or worker['role'] != 'supervisor':
+            c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
+                      (item_id, 'security',
+                       f'UNVERIFIED DISPATCH: tag {tag_uid} ({tag["item_name"]}) dispatched '
+                       f'from {device_id} — no active supervisor session'))
+            events.push({'type': 'security_alert', 'tag_uid': tag_uid, 'item_id': item_id,
+                         'item_name': tag['item_name'],
+                         'message': f'Dispatch from {device_id} without supervisor'})
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('dispatched', tag_uid))
         c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                   (new_qty, item_id))
         c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid)
-                   VALUES (?, 'warehouse_dispatch', -1, ?, ?, ?)''',
-                  (item_id, prev, new_qty, tag_uid))
-        _attach_worker(c, c.lastrowid, payload.get('device_id'))
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
+                   VALUES (?, 'warehouse_dispatch', -1, ?, ?, ?, ?)''',
+                  (item_id, prev, new_qty, tag_uid, device_id))
+        _attach_worker(c, c.lastrowid, device_id)
         _low_stock_check(c, client, item_id, tag['item_name'],
                          new_qty, tag['low_stock_threshold'], tag['unit'])
         conn.commit()
@@ -426,10 +439,10 @@ def _handle_warehouse_rack(client, payload):
                    SET state = ?, rack_location = ?, last_scan = CURRENT_TIMESTAMP
                    WHERE uid = ?''', ('racked', rack_location, tag_uid))
         c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note)
-                   VALUES (?, 'warehouse_rack', 0, ?, ?, ?, ?)''',
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
+                   VALUES (?, 'warehouse_rack', 0, ?, ?, ?, ?, ?)''',
                   (tag['item_id'], tag['quantity'], tag['quantity'],
-                   tag_uid, f'rack:{rack_location}'))
+                   tag_uid, f'rack:{rack_location}', payload.get('device_id', 'unknown')))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
@@ -468,9 +481,10 @@ def _handle_return_gate(client, payload):
         c.execute('UPDATE items SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                   (new_qty, tag['item_id']))
         c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note)
-                   VALUES (?, ?, 1, ?, ?, ?, ?)''',
-                  (tag['item_id'], action, prev, new_qty, tag_uid, note))
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
+                   VALUES (?, ?, 1, ?, ?, ?, ?, ?)''',
+                  (tag['item_id'], action, prev, new_qty, tag_uid, note,
+                   payload.get('device_id', 'unknown')))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
@@ -527,9 +541,10 @@ def _handle_legacy_scan(client, payload):
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
                   ('in', tag_uid))
         c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note)
-                   VALUES (?, 'return_confirmed', 1, ?, ?, ?, ?)''',
-                  (item_id, prev_qty, new_qty, tag_uid, 'Return confirmed — item back in warehouse stock'))
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
+                   VALUES (?, 'return_confirmed', 1, ?, ?, ?, ?, ?)''',
+                  (item_id, prev_qty, new_qty, tag_uid, 'Return confirmed — item back in warehouse stock',
+                   payload.get('device_id', 'unknown')))
         _attach_worker(c, c.lastrowid, payload.get('device_id'))
         conn.commit()
         conn.close()
@@ -550,9 +565,11 @@ def _handle_legacy_scan(client, payload):
     c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
               (new_state, tag_uid))
     c.execute('''INSERT INTO transactions
-               (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid)
-               VALUES (?, ?, ?, ?, ?, ?)''',
-              (item_id, action, change, prev_qty, new_qty, tag_uid))
+               (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)''',
+              (item_id, action, change, prev_qty, new_qty, tag_uid,
+               payload.get('device_id', 'unknown')))
+    _attach_worker(c, c.lastrowid, payload.get('device_id'))
     if action == 'scan_out' and new_qty <= item['low_stock_threshold']:
         alert_type = 'out_of_stock' if new_qty == 0 else 'low_stock'
         alert_msg  = (f"{item['name']} is {'out of stock' if new_qty == 0 else 'low on stock'}: "

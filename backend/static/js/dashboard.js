@@ -12,7 +12,8 @@
   btn.classList.add('active');
   pane.classList.add('active');
   const titles = { overview:'Overview', inventory:'Inventory', analytics:'Analytics',
-    tags:'RFID Tags', workers:'Workers', manufacturing:'Manufacturing', alerts:'Alerts' };
+    tags:'RFID Tags', workers:'Workers', manufacturing:'Manufacturing', alerts:'Alerts',
+    audit:'Audit Trail' };
   const h = document.getElementById('page-title');
   if (h) h.textContent = titles[t] || t;
 })();
@@ -26,10 +27,13 @@ let abcData = {};
 let _items        = [];
 let _tags         = [];
 let _workers      = [];
+let _users        = [];
 let _analytics    = [];
 let _transactions = [];
 let _alerts       = [];
+let _audit        = [];
 let _alertFilter  = 'all';
+let _auditFilter  = 'all';
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (async function init() {
@@ -59,9 +63,11 @@ let _alertFilter  = 'all';
       document.getElementById('tab-overview').classList.add('active');
       document.getElementById('page-title').textContent = 'Overview';
     } else if (savedTab === 'workers') {
-      fetchWorkers();
+      fetchWorkers(); fetchUsers();
     } else if (savedTab === 'manufacturing') {
       fetchPipeline();
+    } else if (savedTab === 'audit') {
+      fetchAudit();
     }
   }
 
@@ -204,7 +210,8 @@ function clockTick() {
 function setupTabs() {
   const titles = {
     overview:'Overview', inventory:'Inventory', analytics:'Analytics',
-    tags:'RFID Tags', workers:'Workers', manufacturing:'Manufacturing', alerts:'Alerts'
+    tags:'RFID Tags', workers:'Workers', manufacturing:'Manufacturing',
+    alerts:'Alerts', audit:'Audit Trail'
   };
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -220,8 +227,9 @@ function setupTabs() {
       if (tab === 'analytics')     fetchAnalytics();
       if (tab === 'tags')          fetchTags();
       if (tab === 'alerts')        fetchAlerts();
-      if (tab === 'workers')       fetchWorkers();
+      if (tab === 'workers')       { fetchWorkers(); fetchUsers(); }
       if (tab === 'manufacturing') fetchPipeline();
+      if (tab === 'audit')         fetchAudit();
     });
   });
 }
@@ -864,6 +872,7 @@ async function doLogout() {
 // ── RBAC ──────────────────────────────────────────────────────────────────────
 function applyRBAC(role) {
   const isManager = role === 'admin' || role === 'manager';
+  const isAdmin   = role === 'admin';
   document.getElementById('nav-workers') && (
     document.getElementById('nav-workers').style.display = isManager ? '' : 'none'
   );
@@ -873,6 +882,11 @@ function applyRBAC(role) {
   document.querySelectorAll('[data-tab="analytics"]').forEach(el => {
     el.style.display = isManager ? '' : 'none';
   });
+  // Audit trail visible to ALL roles — no hide
+  const accCard = document.getElementById('dashboard-accounts-card');
+  if (accCard) accCard.style.display = isAdmin ? '' : 'none';
+  const regCard = document.getElementById('worker-register-card');
+  if (regCard) regCard.style.display = isManager ? '' : 'none';
 }
 
 // ── Workers tab ───────────────────────────────────────────────────────────────
@@ -913,7 +927,7 @@ function renderWorkerTable(workers) {
   if (!tbody) return;
   const isManager = currentRole === 'admin' || currentRole === 'manager';
   if (!workers.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No workers registered</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">No workers registered</td></tr>';
     return;
   }
   const roleBadge = r => {
@@ -939,6 +953,7 @@ function renderWorkerTable(workers) {
           <div class="text-xs text-gray-400">${esc(w.employee_id)}</div>
         </td>
         <td class="px-4 py-3 text-center">${roleBadge(w.role)}</td>
+        <td class="px-4 py-3 text-center text-xs text-gray-500">${esc(w.zone) || '<span class="text-gray-300">—</span>'}</td>
         <td class="px-4 py-3 font-mono text-xs text-gray-500">
           ${esc(w.uid) || '<span class="text-gray-300 text-xs italic">not yet scanned</span>'}
         </td>
@@ -1269,6 +1284,182 @@ function exportTransactionsCSV() {
   );
   showToast('Transactions exported as CSV', 'success');
 }
+
+// ── Audit Trail ───────────────────────────────────────────────────────────────
+async function fetchAudit() {
+  try {
+    const rows = await fetch(`/api/audit?limit=200&filter=${_auditFilter}`).then(r => r.json());
+    _audit = rows;
+    renderAuditTable(rows);
+  } catch {}
+}
+
+function renderAuditTable(rows) {
+  const tbody = document.getElementById('audit-tbody');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">No audit entries</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(t => {
+    const qtyChange = t.quantity_change > 0
+      ? `<span class="text-green-600 font-mono font-semibold">+${t.quantity_change}</span>`
+      : t.quantity_change < 0
+      ? `<span class="text-red-600 font-mono font-semibold">${t.quantity_change}</span>`
+      : `<span class="text-gray-400 font-mono">0</span>`;
+    const deviceLabel = t.device_id === 'dashboard'
+      ? '<span class="badge badge-info">dashboard</span>'
+      : t.device_id === 'unknown' || !t.device_id
+      ? '<span class="text-gray-300 text-xs">—</span>'
+      : `<span class="badge badge-purple">${esc(t.device_id)}</span>`;
+    return `
+      <tr>
+        <td class="px-4 py-2.5 text-xs text-gray-400 whitespace-nowrap">${fmtDate(t.timestamp)}</td>
+        <td class="px-4 py-2.5">${actionBadge(t.action)}</td>
+        <td class="px-4 py-2.5 text-sm text-gray-700">
+          ${t.item_name ? `<div>${esc(t.item_name)}</div><div class="text-xs text-gray-400">${esc(t.item_id)}</div>`
+            : `<span class="text-gray-400 text-xs">${esc(t.item_id)}</span>`}
+        </td>
+        <td class="px-4 py-2.5 text-center">${qtyChange}</td>
+        <td class="px-4 py-2.5 text-sm text-gray-600">${esc(t.performed_by) || '<span class="text-gray-300">system</span>'}</td>
+        <td class="px-4 py-2.5 text-center">${deviceLabel}</td>
+        <td class="px-4 py-2.5 font-mono text-xs text-gray-500">${t.tag_uid ? esc(t.tag_uid) : '<span class="text-gray-300">—</span>'}</td>
+        <td class="px-4 py-2.5 text-xs text-gray-500 max-w-xs truncate">${esc(t.note) || ''}</td>
+      </tr>`;
+  }).join('');
+}
+
+function setAuditFilter(type) {
+  _auditFilter = type;
+  document.querySelectorAll('#audit-filters button').forEach(btn => {
+    const active = btn.dataset.filter === type;
+    btn.className = `btn-sm ${active ? 'btn-sm-edit' : 'btn-sm-neutral'}`;
+  });
+  fetchAudit();
+}
+
+function exportAuditCSV() {
+  if (!_audit.length) return showToast('No audit data to export', 'warning');
+  _downloadCSV(
+    [['Timestamp','Action','Item','Qty Change','Performed By','Device/Station','Tag UID','Note'],
+     ..._audit.map(t => [t.timestamp, t.action, t.item_name || t.item_id,
+       t.quantity_change, t.performed_by || 'system', t.device_id || '',
+       t.tag_uid || '', t.note || ''])],
+    'audit-trail.csv'
+  );
+  showToast('Audit trail exported as CSV', 'success');
+}
+
+// ── Dashboard Accounts ────────────────────────────────────────────────────────
+async function fetchUsers() {
+  if (currentRole !== 'admin') return;
+  try {
+    const users = await fetch('/api/users').then(r => r.json());
+    _users = users;
+    renderDashboardAccounts(users);
+  } catch {}
+}
+
+function renderDashboardAccounts(users) {
+  const tbody = document.getElementById('dashboard-accounts-tbody');
+  if (!tbody) return;
+  if (!users.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No accounts</td></tr>';
+    return;
+  }
+  const roleBadgeMap = { admin:'badge-danger', manager:'badge-warning', viewer:'badge-neutral' };
+  tbody.innerHTML = users.map(u => `
+    <tr data-user-id="${u.id}">
+      <td class="px-4 py-3 font-medium text-gray-800">${esc(u.username)}</td>
+      <td class="px-4 py-3 text-center">
+        <span class="badge ${roleBadgeMap[u.role] || 'badge-neutral'}">${esc(u.role)}</span>
+      </td>
+      <td class="px-4 py-3 font-mono text-xs text-gray-500">
+        ${u.badge_uid ? esc(u.badge_uid) : '<span class="text-gray-300 italic">not linked</span>'}
+      </td>
+      <td class="px-4 py-3 text-xs text-gray-500">${u.employee_id ? esc(u.employee_id) : '<span class="text-gray-300">—</span>'}</td>
+      <td class="px-4 py-3 text-center text-xs text-gray-400">${fmtDate(u.created_at)}</td>
+      <td class="px-4 py-3 text-center">
+        <div class="action-cell">
+          <button onclick='openEditUserModal(${JSON.stringify(u)})' class="btn-sm btn-sm-edit">Edit</button>
+          <button onclick="deleteUser(${u.id})" class="btn-sm btn-sm-danger">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+function openAddUserModal() {
+  document.getElementById('form-add-user').reset();
+  openModal('modal-add-user');
+}
+
+function openEditUserModal(u) {
+  document.getElementById('edit-user-id').value    = u.id;
+  document.getElementById('edit-u-role').value     = u.role;
+  document.getElementById('edit-u-badge').value    = u.badge_uid || '';
+  document.getElementById('edit-u-employee-id').value = u.employee_id || '';
+  openModal('modal-edit-user');
+}
+
+async function deleteUser(id) {
+  const ok = await customConfirm('Delete Account', 'Permanently delete this dashboard account?', true);
+  if (!ok) return;
+  const r = await fetch(`/api/users/${id}`, { method:'DELETE' });
+  if (r.ok) { showToast('Account deleted', 'info'); fetchUsers(); }
+  else { const d = await r.json(); showToast('Error: ' + (d.error || 'Failed'), 'error'); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const formAdd = document.getElementById('form-add-user');
+  if (formAdd) {
+    formAdd.addEventListener('submit', async e => {
+      e.preventDefault();
+      const body = {
+        username: document.getElementById('u-username').value.trim(),
+        password: document.getElementById('u-password').value,
+        role:     document.getElementById('u-role').value,
+      };
+      const r = await fetch('/api/users', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        closeModal('modal-add-user');
+        formAdd.reset();
+        fetchUsers();
+        showToast(`Account "${body.username}" created`, 'success');
+      } else {
+        const d = await r.json();
+        showToast('Error: ' + (d.error || 'Failed'), 'error');
+      }
+    });
+  }
+
+  const formEdit = document.getElementById('form-edit-user');
+  if (formEdit) {
+    formEdit.addEventListener('submit', async e => {
+      e.preventDefault();
+      const id   = document.getElementById('edit-user-id').value;
+      const body = {
+        role:        document.getElementById('edit-u-role').value,
+        badge_uid:   document.getElementById('edit-u-badge').value.trim() || null,
+        employee_id: document.getElementById('edit-u-employee-id').value.trim().toUpperCase() || null,
+      };
+      const r = await fetch(`/api/users/${id}`, {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        closeModal('modal-edit-user');
+        fetchUsers();
+        showToast('Account updated', 'success');
+      } else {
+        const d = await r.json();
+        showToast('Error: ' + (d.error || 'Failed'), 'error');
+      }
+    });
+  }
+});
 
 // ── Init overview charts ──────────────────────────────────────────────────────
 fetchTransactionTrends();

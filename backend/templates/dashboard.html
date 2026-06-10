@@ -73,6 +73,13 @@
         <span>Alerts</span>
         <span id="alert-badge" class="nav-badge hidden">0</span>
       </button>
+      <button class="nav-item" data-tab="audit" id="nav-audit">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+        </svg>
+        <span>Audit Trail</span>
+      </button>
     </nav>
 
     <div class="sidebar-footer">
@@ -474,6 +481,7 @@
               <tr>
                 <th class="th text-left">Employee</th>
                 <th class="th text-center">Role</th>
+                <th class="th text-center">Zone</th>
                 <th class="th text-left">Badge UID</th>
                 <th class="th text-center">Status</th>
                 <th class="th text-center">Last Active</th>
@@ -481,6 +489,34 @@
               </tr>
             </thead>
             <tbody id="workers-tbody">
+              <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Dashboard Accounts (admin only) -->
+      <div class="card" id="dashboard-accounts-card">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="card-title">Dashboard Accounts</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Link a physical badge to a dashboard account for full accountability tracing.</p>
+          </div>
+          <button onclick="openAddUserModal()" class="btn-primary text-sm">+ Add Account</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="table-head">
+              <tr>
+                <th class="th text-left">Username</th>
+                <th class="th text-center">Role</th>
+                <th class="th text-left">Linked Badge</th>
+                <th class="th text-left">Employee ID</th>
+                <th class="th text-center">Created</th>
+                <th class="th text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="dashboard-accounts-tbody">
               <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
             </tbody>
           </table>
@@ -573,6 +609,47 @@
 
     </div>
 
+    <!-- ── TAB: Audit Trail ──────────────────────────────────────────── -->
+    <div id="tab-audit" class="tab-content p-6 space-y-4">
+      <div class="card">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div>
+            <h2 class="card-title">Audit Trail</h2>
+            <p class="text-xs text-slate-400 mt-0.5">All system actions visible to everyone — no admin can hide their tracks.</p>
+          </div>
+          <button class="btn-export" onclick="exportAuditCSV()">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            CSV
+          </button>
+        </div>
+        <div id="audit-filters" class="flex gap-2 mb-4 flex-wrap">
+          <button onclick="setAuditFilter('all')"       class="btn-sm btn-sm-edit"    data-filter="all">All</button>
+          <button onclick="setAuditFilter('dashboard')" class="btn-sm btn-sm-neutral" data-filter="dashboard">Dashboard Actions</button>
+          <button onclick="setAuditFilter('physical')"  class="btn-sm btn-sm-neutral" data-filter="physical">Physical Scans</button>
+          <button onclick="setAuditFilter('admin')"     class="btn-sm btn-sm-neutral" data-filter="admin">Admin Actions</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="table-head">
+              <tr>
+                <th class="th text-left">Time</th>
+                <th class="th text-left">Action</th>
+                <th class="th text-left">Item</th>
+                <th class="th text-center">Qty Δ</th>
+                <th class="th text-left">Performed By</th>
+                <th class="th text-left">Device / Station</th>
+                <th class="th text-left">Tag UID</th>
+                <th class="th text-left">Note</th>
+              </tr>
+            </thead>
+            <tbody id="audit-tbody" class="divide-y divide-slate-100">
+              <tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
   </div><!-- end main -->
 
   <!-- ── Modals ──────────────────────────────────────────────────────────── -->
@@ -661,6 +738,65 @@
             Mark Return Pending
           </button>
           <button type="button" onclick="closeModal('modal-tag-return')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add Dashboard User -->
+  <div id="modal-add-user" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 class="text-lg font-semibold text-gray-800 mb-4">Add Dashboard Account</h3>
+      <form id="form-add-user" class="space-y-3">
+        <div>
+          <label class="form-label">Username</label>
+          <input id="u-username" type="text" placeholder="Username" class="form-input" required />
+        </div>
+        <div>
+          <label class="form-label">Password</label>
+          <input id="u-password" type="password" placeholder="Password" class="form-input" required />
+        </div>
+        <div>
+          <label class="form-label">Role</label>
+          <select id="u-role" class="form-input">
+            <option value="viewer">Viewer</option>
+            <option value="manager">Manager</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 btn-primary">Create Account</button>
+          <button type="button" onclick="closeModal('modal-add-user')" class="flex-1 btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Edit Dashboard User -->
+  <div id="modal-edit-user" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 class="text-lg font-semibold text-gray-800 mb-4">Edit Account</h3>
+      <form id="form-edit-user" class="space-y-3">
+        <input type="hidden" id="edit-user-id" />
+        <div>
+          <label class="form-label">Role</label>
+          <select id="edit-u-role" class="form-input">
+            <option value="viewer">Viewer</option>
+            <option value="manager">Manager</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div>
+          <label class="form-label">Linked Badge UID <span class="text-slate-400 font-normal">(optional)</span></label>
+          <input id="edit-u-badge" type="text" placeholder="e.g. A1B2C3D4" class="form-input" />
+        </div>
+        <div>
+          <label class="form-label">Employee ID <span class="text-slate-400 font-normal">(optional)</span></label>
+          <input id="edit-u-employee-id" type="text" placeholder="e.g. EMP-001" class="form-input uppercase" />
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button type="submit" class="flex-1 btn-primary">Save Changes</button>
+          <button type="button" onclick="closeModal('modal-edit-user')" class="flex-1 btn-secondary">Cancel</button>
         </div>
       </form>
     </div>

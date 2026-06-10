@@ -75,6 +75,7 @@ let _auditFilter  = 'all';
   clockTick();
   setInterval(clockTick, 1000);
 
+  _kpiLoading();
   await Promise.all([refreshSummary(), fetchTransactions(), fetchItems()]);
   await Promise.all([fetchAnalytics(), fetchTags(), fetchAlerts()]);
   fetchStatus();
@@ -104,6 +105,85 @@ function fmtTime(ts) {
   if (!ts) return '—';
   const d = new Date(ts.replace(' ','T') + 'Z');
   return d.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
+
+// ── UI state helpers ──────────────────────────────────────────────────────────
+
+function _skeletonRows(cols, n = 4) {
+  const widths = [
+    ['70%','45%'], ['55%','35%'], ['80%','50%'], ['65%','40%']
+  ];
+  return Array.from({ length: n }, (_, i) => {
+    const cells = Array.from({ length: cols }, (_, c) => {
+      if (c === 0) {
+        const [w1, w2] = widths[i % widths.length];
+        return `<td class="px-4 py-3">
+          <div class="skeleton sk-line sk-line-lg mb-1.5" style="width:${w1}"></div>
+          <div class="skeleton sk-line sk-line-sm" style="width:${w2}"></div>
+        </td>`;
+      }
+      const w = ['30%','50%','40%','45%','35%','30%'][c % 6];
+      return `<td class="px-4 py-3"><div class="skeleton sk-line mx-auto" style="width:${w};margin:0 auto"></div></td>`;
+    }).join('');
+    return `<tr class="sk-row">${cells}</tr>`;
+  }).join('');
+}
+
+const _ICONS = {
+  box:      `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>`,
+  tag:      `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/></svg>`,
+  users:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>`,
+  shield:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>`,
+  clipboard:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>`,
+  wifi:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>`,
+  chart:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`,
+  user:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>`,
+};
+
+function _emptyState(icon, title, msg, btnHtml = '') {
+  const svg = _ICONS[icon] || _ICONS.box;
+  return `<div class="empty-state">
+    <div class="empty-icon">${svg}</div>
+    <div class="empty-title">${title}</div>
+    <div class="empty-message">${msg}</div>
+    ${btnHtml ? `<div class="empty-action">${btnHtml}</div>` : ''}
+  </div>`;
+}
+
+function _tableEmpty(cols, icon, title, msg, btnHtml = '') {
+  return `<tr><td colspan="${cols}" class="p-0">${_emptyState(icon, title, msg, btnHtml)}</td></tr>`;
+}
+
+function _tableError(cols, msg = 'Failed to load data. Check your connection and try again.') {
+  return `<tr><td colspan="${cols}" class="p-0">
+    <div class="error-state">
+      <div class="error-icon">⚠</div>
+      <div class="error-title">Something went wrong</div>
+      <div class="error-message">${esc(msg)}</div>
+    </div>
+  </td></tr>`;
+}
+
+function _listEmpty(icon, title, msg) {
+  return `<li class="p-0">${_emptyState(icon, title, msg)}</li>`;
+}
+
+function _listError(msg = 'Failed to load. Please refresh.') {
+  return `<li class="p-0"><div class="error-state"><div class="error-icon">⚠</div>
+    <div class="error-title">Load error</div>
+    <div class="error-message">${esc(msg)}</div></div></li>`;
+}
+
+function _btnLoad(btn, loading, label) {
+  if (loading) {
+    btn._origText = btn.innerHTML;
+    btn.disabled  = true;
+    btn.innerHTML = `<span class="spinner"></span> ${label || 'Loading…'}`;
+  } else {
+    btn.disabled  = false;
+    btn.innerHTML = btn._origText || label || 'Submit';
+  }
+}
 }
 
 function statusBadge(qty, threshold) {
@@ -163,18 +243,23 @@ function riskColor(score) {
 }
 
 // ── Toast notifications ───────────────────────────────────────────────────────
+const _toastIcons = { success:'✓', error:'✕', info:'i', warning:'!' };
 function showToast(msg, type = 'info', duration = 3500) {
   const container = document.getElementById('toast-container');
   if (!container) return;
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
-  el.textContent = msg;
+  const icon = _toastIcons[type] || 'i';
+  el.innerHTML = `<span class="toast-icon" style="font-weight:700;font-size:0.8rem;opacity:0.8;min-width:1rem;text-align:center">${icon}</span><span>${esc(msg)}</span>`;
   container.appendChild(el);
-  setTimeout(() => {
-    el.style.transition = 'opacity 0.25s';
-    el.style.opacity = '0';
-    setTimeout(() => el.remove(), 280);
-  }, duration);
+  const remove = () => {
+    el.classList.add('toast-exit');
+    setTimeout(() => el.remove(), 220);
+  };
+  const t = setTimeout(remove, duration);
+  el.addEventListener('click', () => { clearTimeout(t); remove(); }, { once: true });
+  el.style.cursor = 'pointer';
+  el.title = 'Click to dismiss';
 }
 
 // ── Custom confirm dialog ─────────────────────────────────────────────────────
@@ -241,16 +326,28 @@ async function fetchStatus() {
     const dot   = document.getElementById('mqtt-dot');
     const label = document.getElementById('mqtt-label');
     if (d.connected) {
-      dot.className   = 'w-2 h-2 rounded-full bg-green-400 shrink-0';
+      dot.className = 'w-1.5 h-1.5 rounded-full shrink-0';
+      dot.style.background = '#3fb950';
       label.textContent = 'MQTT Live';
+      label.style.color = '#3fb950';
     } else {
-      dot.className   = 'w-2 h-2 rounded-full bg-red-400 shrink-0';
+      dot.className = 'w-1.5 h-1.5 rounded-full shrink-0';
+      dot.style.background = '#f85149';
       label.textContent = 'MQTT Offline';
+      label.style.color = '#f85149';
     }
   } catch {}
 }
 
 // ── Summary KPIs ──────────────────────────────────────────────────────────────
+function _kpiLoading() {
+  ['kpi-total-items','kpi-total-qty','kpi-health','kpi-low-stock',
+   'kpi-out-of-stock','kpi-today-scans'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.textContent === '–') el.innerHTML = '<span class="skeleton sk-line sk-line-lg" style="width:2.5rem;display:inline-block"></span>';
+  });
+}
+
 async function refreshSummary() {
   try {
     const s = await fetch('/api/analytics/summary').then(r => r.json());
@@ -355,6 +452,8 @@ async function fetchTransactionTrends() {
 
 // ── Analytics tab ─────────────────────────────────────────────────────────────
 async function fetchAnalytics() {
+  const tbody = document.getElementById('analytics-tbody');
+  if (tbody && !_analytics.length) tbody.innerHTML = _skeletonRows(7);
   try {
     const [analyticsData, abcRaw, items] = await Promise.all([
       fetch('/api/analytics').then(r => r.json()),
@@ -403,7 +502,10 @@ async function fetchAnalytics() {
 
     const tbody = document.getElementById('analytics-tbody');
     if (tbody) {
-      tbody.innerHTML = analyticsData.map(d => {
+      if (!analyticsData.length) {
+        tbody.innerHTML = _tableEmpty(7, 'chart', 'No analytics data yet',
+          'Analytics are calculated once items have transaction history. Add items and scan RFID tags to see insights.');
+      } else tbody.innerHTML = analyticsData.map(d => {
         const item   = itemMap[d.item_id] || {};
         const abc    = abcData[d.item_id];
         const riskCls = d.risk_score >= 80 ? 'text-red-600 font-semibold' :
@@ -427,42 +529,64 @@ async function fetchAnalytics() {
           </tr>`;
       }).join('');
     }
-  } catch {}
+  } catch {
+    const tbody = document.getElementById('analytics-tbody');
+    if (tbody) tbody.innerHTML = _tableError(7);
+  }
 }
 
 // ── Transactions (scan log) ───────────────────────────────────────────────────
 async function fetchTransactions() {
+  const ul = document.getElementById('scan-log');
+  if (ul && !_transactions.length) {
+    ul.innerHTML = `<li class="p-0"><div class="section-loading"><span class="spinner spinner-dark"></span> Loading activity…</div></li>`;
+  }
   try {
     const txs = await fetch('/api/transactions?limit=50').then(r => r.json());
     _transactions = txs;
-    const ul = document.getElementById('scan-log');
     if (!ul) return;
     if (!txs.length) {
-      ul.innerHTML = '<li class="py-4 text-slate-400 text-sm text-center">No transactions yet</li>';
+      ul.innerHTML = `<li class="p-0">
+        <div class="scan-empty">
+          <div class="scan-pulse">
+            <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>
+            </svg>
+          </div>
+          <div class="text-sm font-medium text-gray-400">Waiting for first scan</div>
+          <div class="text-xs text-gray-300">RFID activity will appear here in real time</div>
+        </div>
+      </li>`;
       return;
     }
     ul.innerHTML = txs.map(t => `
-      <li class="py-2.5 flex items-start gap-3">
+      <li class="py-2.5 flex items-start gap-3 hover:bg-slate-50 px-1 rounded-lg transition-colors">
         <div class="flex-1 min-w-0">
           <div class="text-sm font-medium text-gray-700 truncate">${esc(t.item_name || t.item_id)}</div>
           <div class="text-xs text-gray-400 mt-0.5">
             ${fmtDate(t.timestamp)}
             ${t.tag_uid ? `<span class="font-mono ml-1 text-gray-500">${esc(t.tag_uid)}</span>` : ''}
-            ${t.performed_by && t.performed_by !== 'system' ? `<span class="ml-1 text-indigo-500">· ${esc(t.performed_by)}</span>` : ''}
+            ${t.performed_by && t.performed_by !== 'system' ? `<span class="ml-1 text-blue-500">· ${esc(t.performed_by)}</span>` : ''}
           </div>
         </div>
         <div class="shrink-0 mt-0.5">${actionBadge(t.action)}</div>
       </li>`).join('');
-  } catch {}
+  } catch {
+    if (ul) ul.innerHTML = _listError('Could not load transaction history.');
+  }
 }
 
 // ── Inventory table ───────────────────────────────────────────────────────────
 async function fetchItems() {
+  const tbody = document.getElementById('inventory-tbody');
+  if (tbody && !_items.length) tbody.innerHTML = _skeletonRows(6);
   try {
     const items = await fetch('/api/items').then(r => r.json());
     _items = items;
     renderItemsTable(items);
-  } catch {}
+  } catch {
+    if (tbody) tbody.innerHTML = _tableError(6);
+  }
 }
 
 function renderItemsTable(items) {
@@ -470,7 +594,11 @@ function renderItemsTable(items) {
   if (!tbody) return;
   const isManager = currentRole === 'admin' || currentRole === 'manager';
   if (!items.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No items found</td></tr>';
+    const btn = isManager
+      ? `<button onclick="openAddItemModal()" class="btn-primary text-sm">+ Add first item</button>`
+      : '';
+    tbody.innerHTML = _tableEmpty(6, 'box', 'No inventory items yet',
+      'Add your first item to start tracking stock levels and receive alerts.', btn);
     return;
   }
   tbody.innerHTML = items.map(item => {
@@ -511,18 +639,23 @@ function filterInventory(q) {
 
 // ── RFID Tags table ───────────────────────────────────────────────────────────
 async function fetchTags() {
+  const tbody = document.getElementById('tags-tbody');
+  if (tbody && !_tags.length) tbody.innerHTML = _skeletonRows(6);
   try {
     const tags = await fetch('/api/tags').then(r => r.json());
     _tags = tags;
     renderTagsTable(tags);
-  } catch {}
+  } catch {
+    if (tbody) tbody.innerHTML = _tableError(6);
+  }
 }
 
 function renderTagsTable(tags) {
   const tbody = document.getElementById('tags-tbody');
   if (!tbody) return;
   if (!tags.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No tags registered</td></tr>';
+    tbody.innerHTML = _tableEmpty(6, 'tag', 'No RFID tags yet',
+      'Tags appear automatically when scanned. In legacy mode, scan any tag at your reader to register it.');
     return;
   }
   tbody.innerHTML = tags.map(t => {
@@ -566,6 +699,8 @@ function filterTags(q) {
 // ── Alerts ────────────────────────────────────────────────────────────────────
 async function fetchAlerts() {
   try {
+    const ul = document.getElementById('alerts-list');
+    if (ul && !_alerts.length) ul.innerHTML = `<li class="p-0"><div class="section-loading"><span class="spinner spinner-dark"></span> Checking alerts…</div></li>`;
     const alerts = await fetch('/api/alerts').then(r => r.json());
     _alerts = alerts;
 
@@ -580,7 +715,10 @@ async function fetchAlerts() {
     }
 
     renderAlerts(alerts);
-  } catch {}
+  } catch {
+    const ul = document.getElementById('alerts-list');
+    if (ul) ul.innerHTML = _listError('Could not load alerts.');
+  }
 }
 
 function renderAlerts(alerts) {
@@ -592,7 +730,15 @@ function renderAlerts(alerts) {
   else if (_alertFilter !== 'all')    filtered = alerts.filter(a => a.alert_type === _alertFilter);
 
   if (!filtered.length) {
-    ul.innerHTML = '<li class="py-6 text-slate-400 text-sm text-center">No alerts</li>';
+    const msgs = {
+      all:          ['All clear', 'No alerts right now. You\'ll be notified when stock runs low or security events occur.'],
+      unread:       ['No unread alerts', 'All alerts have been reviewed.'],
+      security:     ['No security alerts', 'No unauthorized scan attempts detected.'],
+      low_stock:    ['Stock levels OK', 'No items below their threshold right now.'],
+      out_of_stock: ['Nothing out of stock', 'All items have available quantity.'],
+    };
+    const [title, msg] = msgs[_alertFilter] || ['No alerts', ''];
+    ul.innerHTML = _listEmpty('shield', title, msg);
     return;
   }
 
@@ -704,62 +850,75 @@ document.querySelectorAll('.modal-overlay').forEach(el => {
 function setupForms() {
   document.getElementById('form-add-item').addEventListener('submit', async e => {
     e.preventDefault();
+    const btn  = e.target.querySelector('button[type=submit]');
     const fd   = new FormData(e.target);
     const body = Object.fromEntries(fd);
     body.quantity            = parseInt(body.quantity);
     body.low_stock_threshold = parseInt(body.low_stock_threshold);
-    const r = await fetch('/api/items', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-    });
-    if (r.ok) {
-      closeModal('modal-add-item');
-      e.target.reset();
-      fetchItems();
-      refreshSummary();
-      showToast('Item added successfully', 'success');
-    } else {
-      const d = await r.json();
-      showToast('Error: ' + (d.error || 'Failed to add item'), 'error');
-    }
+    _btnLoad(btn, true, 'Adding…');
+    try {
+      const r = await fetch('/api/items', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        closeModal('modal-add-item');
+        e.target.reset();
+        fetchItems();
+        refreshSummary();
+        showToast('Item added successfully', 'success');
+      } else {
+        const d = await r.json();
+        showToast(d.error || 'Failed to add item', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Add Item'); }
   });
 
   document.getElementById('form-edit-item').addEventListener('submit', async e => {
     e.preventDefault();
+    const btn  = e.target.querySelector('button[type=submit]');
     const fd   = new FormData(e.target);
     const body = Object.fromEntries(fd);
     const id   = body.id; delete body.id;
     body.quantity            = parseInt(body.quantity);
     body.low_stock_threshold = parseInt(body.low_stock_threshold);
-    const r = await fetch(`/api/items/${encodeURIComponent(id)}`, {
-      method:'PUT', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-    });
-    if (r.ok) {
-      closeModal('modal-edit-item');
-      fetchItems();
-      refreshSummary();
-      showToast('Item updated', 'success');
-    } else {
-      showToast('Failed to update item', 'error');
-    }
+    _btnLoad(btn, true, 'Saving…');
+    try {
+      const r = await fetch(`/api/items/${encodeURIComponent(id)}`, {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        closeModal('modal-edit-item');
+        fetchItems();
+        refreshSummary();
+        showToast('Item updated', 'success');
+      } else {
+        const d = await r.json().catch(() => ({}));
+        showToast(d.error || 'Failed to update item', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Save Changes'); }
   });
 
   document.getElementById('form-tag-return').addEventListener('submit', async e => {
     e.preventDefault();
+    const btn  = e.target.querySelector('button[type=submit]');
     const uid  = document.getElementById('return-tag-uid').value;
     const note = (document.getElementById('return-note')?.value || '').trim() || 'Admin return';
-    const r    = await fetch(`/api/tags/${encodeURIComponent(uid)}/return`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ note }),
-    });
-    if (r.ok) {
-      closeModal('modal-tag-return');
-      showToast('Tag marked as return pending — scan to confirm', 'warning', 4000);
-    } else {
-      const d = await r.json();
-      showToast('Error: ' + (d.error || 'Return failed'), 'error');
-    }
+    _btnLoad(btn, true, 'Submitting…');
+    try {
+      const r = await fetch(`/api/tags/${encodeURIComponent(uid)}/return`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ note }),
+      });
+      if (r.ok) {
+        closeModal('modal-tag-return');
+        showToast('Marked return pending — scan tag to confirm', 'warning', 5000);
+      } else {
+        const d = await r.json().catch(() => ({}));
+        showToast(d.error || 'Return request failed', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Mark Return Pending'); }
   });
 }
 
@@ -891,6 +1050,8 @@ function applyRBAC(role) {
 
 // ── Workers tab ───────────────────────────────────────────────────────────────
 async function fetchWorkers() {
+  const tbody = document.getElementById('workers-tbody');
+  if (tbody && !_workers.length) tbody.innerHTML = _skeletonRows(7);
   try {
     const [workers, sessions] = await Promise.all([
       fetch('/api/workers').then(r => r.json()),
@@ -899,7 +1060,9 @@ async function fetchWorkers() {
     _workers = workers;
     renderWorkerSessions(sessions);
     renderWorkerTable(workers);
-  } catch {}
+  } catch {
+    if (tbody) tbody.innerHTML = _tableError(7);
+  }
 }
 
 function renderWorkerSessions(sessions) {
@@ -907,7 +1070,10 @@ function renderWorkerSessions(sessions) {
   if (!el) return;
   const entries = Object.entries(sessions);
   if (!entries.length) {
-    el.innerHTML = '<span class="text-slate-400 text-sm">No workers authenticated at any station</span>';
+    el.innerHTML = `<div class="flex items-center gap-2 text-sm text-slate-400 py-1">
+      <span class="w-1.5 h-1.5 rounded-full bg-slate-300 shrink-0"></span>
+      No workers authenticated — tap an RFID badge at any station reader
+    </div>`;
     return;
   }
   el.innerHTML = entries.map(([did, s]) => `
@@ -927,7 +1093,8 @@ function renderWorkerTable(workers) {
   if (!tbody) return;
   const isManager = currentRole === 'admin' || currentRole === 'manager';
   if (!workers.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">No workers registered</td></tr>';
+    tbody.innerHTML = _tableEmpty(7, 'users', 'No workers registered yet',
+      'Register workers so their RFID badges can authenticate at stations. Use the form above to add your first worker.');
     return;
   }
   const roleBadge = r => {
@@ -1003,21 +1170,25 @@ document.addEventListener('DOMContentLoaded', () => {
   if (form) {
     form.addEventListener('submit', async e => {
       e.preventDefault();
+      const btn         = e.target.querySelector('button[type=submit]');
       const employee_id = document.getElementById('w-employee-id').value.trim().toUpperCase();
       const name        = document.getElementById('w-name').value.trim();
       const role        = document.getElementById('w-role').value;
-      const r = await fetch('/api/workers', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ employee_id, name, role }),
-      });
-      const d = await r.json();
-      if (r.ok) {
-        form.reset();
-        fetchWorkers();
-        showToast(`Worker ${name} registered`, 'success');
-      } else {
-        showToast('Error: ' + (d.error || 'Failed to register'), 'error');
-      }
+      _btnLoad(btn, true, 'Registering…');
+      try {
+        const r = await fetch('/api/workers', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ employee_id, name, role }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) {
+          form.reset();
+          fetchWorkers();
+          showToast(`${esc(name)} registered as ${role}`, 'success');
+        } else {
+          showToast(d.error || 'Failed to register worker', 'error');
+        }
+      } finally { _btnLoad(btn, false, 'Register Worker'); }
     });
   }
 });
@@ -1076,7 +1247,8 @@ function renderPipelineItems(perItem, items) {
   if (!tbody) return;
   const itemNameMap = Object.fromEntries(items.map(i => [i.id, i.name]));
   if (!perItem.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">No tags tracked yet</td></tr>';
+    tbody.innerHTML = _tableEmpty(7, 'tag', 'No pipeline activity yet',
+      'Tags will appear here once written at the factory and scanned through the pipeline.');
     return;
   }
   tbody.innerHTML = perItem.map(row => {
@@ -1118,7 +1290,8 @@ function renderWriteJobs(jobs) {
   const tbody = document.getElementById('jobs-tbody');
   if (!tbody) return;
   if (!jobs.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">No jobs yet</td></tr>';
+    tbody.innerHTML = _tableEmpty(4, 'box', 'No write jobs yet',
+      'Dispatch a write job to the factory ESP32 to start tagging inventory items.');
     return;
   }
   const jbBadge = s => {
@@ -1152,27 +1325,24 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       const item_id  = document.getElementById('job-item-id').value;
       const quantity = parseInt(document.getElementById('job-quantity').value);
-      if (!item_id || quantity < 1) return;
-      const btn       = form.querySelector('button[type=submit]');
-      btn.disabled    = true;
-      btn.textContent = 'Sending…';
+      if (!item_id) return showToast('Select an item first', 'warning');
+      if (quantity < 1) return showToast('Quantity must be at least 1', 'warning');
+      const btn = form.querySelector('button[type=submit]');
+      _btnLoad(btn, true, 'Dispatching…');
       try {
         const r = await fetch('/api/factory/jobs', {
           method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ item_id, quantity }),
         });
-        const d = await r.json();
+        const d = await r.json().catch(() => ({}));
         if (r.ok) {
           form.reset();
           fetchPipeline();
-          showToast(`Write job dispatched: ${quantity} tags for ${item_id}`, 'success');
+          showToast(`Job sent: ${quantity} tags for ${item_id}`, 'success');
         } else {
-          showToast('Error: ' + (d.error || 'Failed'), 'error');
+          showToast(d.error || 'Failed to send job', 'error');
         }
-      } finally {
-        btn.disabled    = false;
-        btn.textContent = 'Send Job to ESP32';
-      }
+      } finally { _btnLoad(btn, false, 'Send Job to ESP32'); }
     });
   }
 });
@@ -1287,18 +1457,29 @@ function exportTransactionsCSV() {
 
 // ── Audit Trail ───────────────────────────────────────────────────────────────
 async function fetchAudit() {
+  const tbody = document.getElementById('audit-tbody');
+  if (tbody) tbody.innerHTML = _skeletonRows(8);
   try {
     const rows = await fetch(`/api/audit?limit=200&filter=${_auditFilter}`).then(r => r.json());
     _audit = rows;
     renderAuditTable(rows);
-  } catch {}
+  } catch {
+    if (tbody) tbody.innerHTML = _tableError(8);
+  }
 }
 
 function renderAuditTable(rows) {
   const tbody = document.getElementById('audit-tbody');
   if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">No audit entries</td></tr>';
+    const filterMsgs = {
+      all:       ['No audit entries yet', 'All system actions will be logged here as they happen — scans, admin changes, and more.'],
+      dashboard: ['No dashboard actions yet', 'Actions performed via this dashboard will appear here.'],
+      physical:  ['No physical scans yet', 'RFID scans from ESP32 stations will appear here.'],
+      admin:     ['No admin actions yet', 'Item and tag management actions performed by admins will appear here.'],
+    };
+    const [title, msg] = filterMsgs[_auditFilter] || filterMsgs.all;
+    tbody.innerHTML = _tableEmpty(8, 'clipboard', title, msg);
     return;
   }
   tbody.innerHTML = rows.map(t => {
@@ -1353,18 +1534,24 @@ function exportAuditCSV() {
 // ── Dashboard Accounts ────────────────────────────────────────────────────────
 async function fetchUsers() {
   if (currentRole !== 'admin') return;
+  const tbody = document.getElementById('dashboard-accounts-tbody');
+  if (tbody && !_users.length) tbody.innerHTML = _skeletonRows(6);
   try {
     const users = await fetch('/api/users').then(r => r.json());
     _users = users;
     renderDashboardAccounts(users);
-  } catch {}
+  } catch {
+    if (tbody) tbody.innerHTML = _tableError(6);
+  }
 }
 
 function renderDashboardAccounts(users) {
   const tbody = document.getElementById('dashboard-accounts-tbody');
   if (!tbody) return;
   if (!users.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No accounts</td></tr>';
+    tbody.innerHTML = _tableEmpty(6, 'user', 'No dashboard accounts',
+      'Create accounts for staff who need dashboard access. You can link physical RFID badges to accounts for full audit traceability.',
+      `<button onclick="openAddUserModal()" class="btn-primary text-sm">+ Create first account</button>`);
     return;
   }
   const roleBadgeMap = { admin:'badge-danger', manager:'badge-warning', viewer:'badge-neutral' };
@@ -1414,24 +1601,29 @@ document.addEventListener('DOMContentLoaded', () => {
   if (formAdd) {
     formAdd.addEventListener('submit', async e => {
       e.preventDefault();
+      const btn  = e.target.querySelector('button[type=submit]');
       const body = {
         username: document.getElementById('u-username').value.trim(),
         password: document.getElementById('u-password').value,
         role:     document.getElementById('u-role').value,
       };
-      const r = await fetch('/api/users', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(body),
-      });
-      if (r.ok) {
-        closeModal('modal-add-user');
-        formAdd.reset();
-        fetchUsers();
-        showToast(`Account "${body.username}" created`, 'success');
-      } else {
-        const d = await r.json();
-        showToast('Error: ' + (d.error || 'Failed'), 'error');
-      }
+      if (!body.username || !body.password) return showToast('Username and password are required', 'warning');
+      _btnLoad(btn, true, 'Creating…');
+      try {
+        const r = await fetch('/api/users', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(body),
+        });
+        if (r.ok) {
+          closeModal('modal-add-user');
+          formAdd.reset();
+          fetchUsers();
+          showToast(`Account "${esc(body.username)}" created`, 'success');
+        } else {
+          const d = await r.json().catch(() => ({}));
+          showToast(d.error || 'Failed to create account', 'error');
+        }
+      } finally { _btnLoad(btn, false, 'Create Account'); }
     });
   }
 
@@ -1439,24 +1631,28 @@ document.addEventListener('DOMContentLoaded', () => {
   if (formEdit) {
     formEdit.addEventListener('submit', async e => {
       e.preventDefault();
+      const btn  = e.target.querySelector('button[type=submit]');
       const id   = document.getElementById('edit-user-id').value;
       const body = {
         role:        document.getElementById('edit-u-role').value,
         badge_uid:   document.getElementById('edit-u-badge').value.trim() || null,
         employee_id: document.getElementById('edit-u-employee-id').value.trim().toUpperCase() || null,
       };
-      const r = await fetch(`/api/users/${id}`, {
-        method:'PUT', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(body),
-      });
-      if (r.ok) {
-        closeModal('modal-edit-user');
-        fetchUsers();
-        showToast('Account updated', 'success');
-      } else {
-        const d = await r.json();
-        showToast('Error: ' + (d.error || 'Failed'), 'error');
-      }
+      _btnLoad(btn, true, 'Saving…');
+      try {
+        const r = await fetch(`/api/users/${id}`, {
+          method:'PUT', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(body),
+        });
+        if (r.ok) {
+          closeModal('modal-edit-user');
+          fetchUsers();
+          showToast('Account updated', 'success');
+        } else {
+          const d = await r.json().catch(() => ({}));
+          showToast(d.error || 'Failed to update account', 'error');
+        }
+      } finally { _btnLoad(btn, false, 'Save Changes'); }
     });
   }
 });

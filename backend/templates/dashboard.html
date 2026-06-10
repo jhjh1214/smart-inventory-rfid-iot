@@ -83,13 +83,17 @@
     </nav>
 
     <div class="sidebar-footer">
-      <div class="flex items-center gap-2 px-4 py-2">
-        <span id="mqtt-dot" class="w-2 h-2 rounded-full bg-gray-400 shrink-0"></span>
-        <span id="mqtt-label" class="text-slate-400 text-xs">Connecting…</span>
+      <div class="flex items-center gap-2 px-4 py-2.5">
+        <span id="mqtt-dot" class="w-1.5 h-1.5 rounded-full bg-gray-600 shrink-0"></span>
+        <span id="mqtt-label" class="text-xs" style="color:#4d5562">Connecting…</span>
       </div>
-      <div class="px-4 py-2 text-slate-400 text-xs" id="user-info"></div>
+      <div class="px-4 pb-1 text-xs font-medium" style="color:#4d5562" id="user-info"></div>
       <button id="logout-btn" onclick="doLogout()"
-        class="mx-4 mb-4 text-xs text-slate-400 hover:text-white transition">Sign out</button>
+        class="mx-3 mb-3 flex items-center gap-1.5 text-xs px-2 py-1.5 rounded-md transition"
+        style="color:#4d5562" onmouseover="this.style.color='#cdd9e5';this.style.background='#161b22'" onmouseout="this.style.color='#4d5562';this.style.background='transparent'">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+        Sign out
+      </button>
     </div>
   </aside>
 
@@ -108,9 +112,12 @@
     </header>
 
     <!-- Alert banner -->
-    <div id="alert-banner" class="hidden bg-red-500 text-white px-6 py-2.5 flex items-center justify-between text-sm">
-      <span id="alert-banner-text"></span>
-      <button onclick="dismissBanner()" class="ml-4 w-6 h-6 rounded-full flex items-center justify-center hover:bg-red-600 transition font-bold leading-none">&times;</button>
+    <div id="alert-banner" class="hidden text-white px-5 py-2 flex items-center justify-between text-sm" style="background:#b91c1c">
+      <div class="flex items-center gap-2">
+        <svg class="w-4 h-4 shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        <span id="alert-banner-text" class="font-medium"></span>
+      </div>
+      <button onclick="dismissBanner()" class="ml-4 p-1 rounded opacity-70 hover:opacity-100 transition leading-none text-lg">&times;</button>
     </div>
 
     <!-- ── TAB: Overview ───────────────────────────────────────────────── -->
@@ -230,7 +237,7 @@
           </button>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full text-sm table-row-hover">
             <thead class="table-head">
               <tr>
                 <th class="th text-left">Item</th>
@@ -283,7 +290,7 @@
           </div>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full text-sm table-row-hover">
             <thead class="table-head">
               <tr>
                 <th class="th text-left">Item</th>
@@ -349,7 +356,7 @@
           </button>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full text-sm table-row-hover">
             <thead class="table-head">
               <tr>
                 <th class="th text-left">Tag UID</th>
@@ -476,7 +483,7 @@
           <input class="search-input" placeholder="Search by name or employee ID…" oninput="filterWorkers(this.value)" />
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full text-sm table-row-hover">
             <thead class="table-head">
               <tr>
                 <th class="th text-left">Employee</th>
@@ -505,7 +512,7 @@
           <button onclick="openAddUserModal()" class="btn-primary text-sm">+ Add Account</button>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full text-sm table-row-hover">
             <thead class="table-head">
               <tr>
                 <th class="th text-left">Username</th>
@@ -559,7 +566,7 @@
         <div class="card">
           <h2 class="card-title mb-3">Recent Write Jobs</h2>
           <div class="overflow-y-auto max-h-72">
-            <table class="w-full text-sm">
+            <table class="w-full text-sm table-row-hover">
               <thead class="table-head">
                 <tr>
                   <th class="th text-left">Item</th>
@@ -580,7 +587,7 @@
       <div class="card">
         <h2 class="card-title mb-4">Per-Item Stage Breakdown</h2>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full text-sm table-row-hover">
             <thead class="table-head">
               <tr>
                 <th class="th text-left">Item</th>
@@ -629,7 +636,7 @@
           <button onclick="setAuditFilter('admin')"     class="btn-sm btn-sm-neutral" data-filter="admin">Admin Actions</button>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full text-sm table-row-hover">
             <thead class="table-head">
               <tr>
                 <th class="th text-left">Time</th>

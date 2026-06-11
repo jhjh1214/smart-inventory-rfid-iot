@@ -37,6 +37,7 @@ let _auditFilter  = 'all';
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 (async function init() {
+  initTheme();
   try {
     const r = await fetch('/api/me');
     if (!r.ok) { window.location.href = '/login'; return; }
@@ -90,6 +91,25 @@ let _auditFilter  = 'all';
   setInterval(fetchTransactions, 15000);
   setInterval(fetchAlerts, 20000);
 })();
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+function initTheme() {
+  const saved = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', saved);
+  _applyThemeIcon(saved);
+}
+
+function toggleTheme() {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  _applyThemeIcon(next);
+}
+
+function _applyThemeIcon(theme) {
+  document.getElementById('icon-moon')?.classList.toggle('hidden', theme === 'dark');
+  document.getElementById('icon-sun')?.classList.toggle('hidden', theme !== 'dark');
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function esc(s) {

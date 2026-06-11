@@ -12,8 +12,11 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <link rel="stylesheet" href="/static/css/style.css" />
+  <script>
+    (function(){const t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t);})();
+  </script>
 </head>
-<body class="min-h-screen flex" style="background:#F5F3FF">
+<body class="min-h-screen flex">
 
   <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
   <aside id="sidebar" class="sidebar">
@@ -114,6 +117,17 @@
           <span id="topbar-username" class="text-sm font-medium" style="color:#4b5563"></span>
           <span id="topbar-role-pill" class="topbar-role"></span>
         </div>
+        <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode"
+          class="p-1.5 rounded-lg cursor-pointer transition-colors hover:bg-purple-100 dark-hover">
+          <svg id="icon-moon" class="w-4 h-4" style="color:#7C3AED" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+          </svg>
+          <svg id="icon-sun" class="w-4 h-4 hidden" style="color:#a78bfa" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z"/>
+          </svg>
+        </button>
         <span id="scan-live-badge" class="hidden live-badge">LIVE SCAN</span>
       </div>
     </header>

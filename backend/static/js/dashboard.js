@@ -1940,11 +1940,11 @@ function openAddWebhookModal() {
 
 function openEditWebhookModal(wh) {
   document.getElementById('webhook-modal-title').textContent = 'Edit Webhook';
-  document.getElementById('webhook-id').value      = wh.id;
-  document.getElementById('webhook-name').value    = wh.name;
-  document.getElementById('webhook-url').value     = wh.url;
-  document.getElementById('webhook-events').value  = wh.events;
-  const activeEl = document.getElementById('webhook-active');
+  document.getElementById('webhook-id').value  = wh.id;
+  document.getElementById('wh-name').value     = wh.name;
+  document.getElementById('wh-url').value      = wh.url;
+  document.getElementById('wh-events').value   = wh.events;
+  const activeEl = document.getElementById('wh-active');
   if (activeEl) activeEl.checked = !!wh.active;
   openModal('modal-webhook');
 }
@@ -1971,11 +1971,11 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     const btn    = form.querySelector('button[type=submit]');
     const id     = document.getElementById('webhook-id').value;
-    const active = document.getElementById('webhook-active');
+    const active = document.getElementById('wh-active');
     const body   = {
-      name:   document.getElementById('webhook-name').value.trim(),
-      url:    document.getElementById('webhook-url').value.trim(),
-      events: document.getElementById('webhook-events').value.trim() || 'low_stock,security',
+      name:   document.getElementById('wh-name').value.trim(),
+      url:    document.getElementById('wh-url').value.trim(),
+      events: document.getElementById('wh-events').value.trim() || 'low_stock,security',
       active: (active ? active.checked : true) ? 1 : 0,
     };
     if (!body.name) return showToast('Webhook name is required', 'warning');

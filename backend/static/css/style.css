@@ -1,7 +1,10 @@
 /* ── Base ─────────────────────────────────────────────────────────────────── */
 
 *, *::before, *::after { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; }
+body {
+  font-family: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #F5F3FF;
+}
 
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 
@@ -68,11 +71,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 
 .nav-item.active {
   background: #1c2128;
-  color: #79c0ff;
+  color: #c4b5fd;
 }
 
 .nav-item.active svg {
-  color: #79c0ff;
+  color: #c4b5fd;
 }
 
 .nav-item.active::before {
@@ -82,7 +85,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   top: 6px;
   bottom: 6px;
   width: 3px;
-  background: #2f81f7;
+  background: #7C3AED;
   border-radius: 0 2px 2px 0;
 }
 
@@ -108,7 +111,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 
 .topbar {
   background: white;
-  border-bottom: 1px solid #e9ecef;
+  border-bottom: 1px solid #ede9fe;
   padding: 0.75rem 1.5rem;
   display: flex;
   align-items: center;
@@ -116,7 +119,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   position: sticky;
   top: 0;
   z-index: 10;
-  box-shadow: 0 1px 0 rgba(0,0,0,0.04);
+  box-shadow: 0 1px 0 rgba(124,58,237,0.06);
 }
 
 /* ── Tab content ─────────────────────────────────────────────────────────── */
@@ -130,13 +133,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   background: white;
   border-radius: 0.625rem;
   padding: 1.25rem;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  border: 1px solid #f1f3f4;
+  box-shadow: 0 1px 3px rgba(124,58,237,0.07), 0 1px 2px rgba(0,0,0,0.04);
+  border: 1px solid #ede9fe;
 }
 
 .card-title {
   font-weight: 600;
-  color: #1a1a2e;
+  color: #4C1D95;
   font-size: 0.875rem;
   margin-bottom: 0.25rem;
   letter-spacing: -0.01em;
@@ -149,10 +152,27 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   border-radius: 0.625rem;
   padding: 1rem 1.25rem;
   border-left: 3px solid;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-  border-top: 1px solid #f1f3f4;
-  border-right: 1px solid #f1f3f4;
-  border-bottom: 1px solid #f1f3f4;
+  box-shadow: 0 1px 3px rgba(124,58,237,0.07);
+  border-top: 1px solid #ede9fe;
+  border-right: 1px solid #ede9fe;
+  border-bottom: 1px solid #ede9fe;
+  transition: box-shadow 0.15s, transform 0.15s;
+  cursor: default;
+}
+
+.kpi-card:hover {
+  box-shadow: 0 4px 12px rgba(124,58,237,0.12);
+  transform: translateY(-1px);
+}
+
+.kpi-icon {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .kpi-label {
@@ -165,6 +185,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 }
 
 .kpi-value {
+  font-family: 'Fira Code', 'Fira Mono', 'Consolas', monospace;
   font-size: 1.875rem;
   font-weight: 700;
   color: #111827;
@@ -181,7 +202,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 
 /* ── Table helpers ───────────────────────────────────────────────────────── */
 
-.table-head { background: #f8f9fb; }
+.table-head { background: #faf5ff; }
 .th {
   padding: 0.5rem 1rem;
   font-size: 0.685rem;
@@ -189,11 +210,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   color: #64748b;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  border-bottom: 1px solid #f1f3f4;
+  border-bottom: 1px solid #ede9fe;
 }
 
 .table-row-hover tbody tr { transition: background 0.1s; }
-.table-row-hover tbody tr:hover { background: #fafbfc; }
+.table-row-hover tbody tr:hover { background: #faf5ff; }
 
 .row-warning { background-color: #fffbeb !important; }
 .row-danger  { background-color: #fff5f5 !important; }
@@ -223,35 +244,35 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 
 .btn-primary {
-  background: #2563eb;
+  background: #7C3AED;
   color: white;
   padding: 0.5rem 1rem;
   border-radius: 0.45rem;
   font-weight: 600;
   font-size: 0.875rem;
-  transition: background 0.15s, transform 0.1s;
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
   border: none;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
 }
-.btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+.btn-primary:hover:not(:disabled) { background: #6D28D9; box-shadow: 0 4px 12px rgba(124,58,237,0.3); }
 .btn-primary:active:not(:disabled) { transform: translateY(1px); }
 .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .btn-secondary {
-  background: #f8fafc;
+  background: #faf5ff;
   color: #374151;
   padding: 0.5rem 1rem;
   border-radius: 0.45rem;
   font-weight: 500;
   font-size: 0.875rem;
   transition: background 0.15s;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #ede9fe;
   cursor: pointer;
 }
-.btn-secondary:hover:not(:disabled) { background: #f1f5f9; }
+.btn-secondary:hover:not(:disabled) { background: #ede9fe; }
 .btn-secondary:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* ── Form elements ───────────────────────────────────────────────────────── */
@@ -276,8 +297,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   background: white;
 }
 .form-input:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+  border-color: #7C3AED;
+  box-shadow: 0 0 0 3px rgba(124,58,237,0.12);
 }
 .form-input::placeholder { color: #9ca3af; }
 .form-input.input-error { border-color: #ef4444; }
@@ -318,7 +339,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   padding: 1.5rem;
   width: 100%;
   max-width: 28rem;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.2), 0 0 0 1px rgba(0,0,0,0.05);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2), 0 0 0 1px rgba(124,58,237,0.08);
   animation: modalIn 0.18s cubic-bezier(0.34,1.56,0.64,1);
 }
 
@@ -359,7 +380,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 /* ── Scan flash ──────────────────────────────────────────────────────────── */
 
 @keyframes flashRow {
-  0%   { background-color: #dbeafe; }
+  0%   { background-color: #ede9fe; }
   100% { background-color: transparent; }
 }
 .row-flash { animation: flashRow 2s ease-out forwards; }
@@ -368,8 +389,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 
 ::-webkit-scrollbar        { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track  { background: transparent; }
-::-webkit-scrollbar-thumb  { background: #d1d5db; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+::-webkit-scrollbar-thumb  { background: #c4b5fd; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #a78bfa; }
 
 /* ── Small action buttons ────────────────────────────────────────────────── */
 
@@ -447,7 +468,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 
 .toast-success { background: #166534; }
 .toast-error   { background: #991b1b; }
-.toast-info    { background: #1e40af; }
+.toast-info    { background: #4C1D95; }
 .toast-warning { background: #92400e; }
 
 @keyframes toastIn {
@@ -479,10 +500,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   font-size: 0.845rem;
   outline: none;
   color: #374151;
-  background: #f9fafb;
+  background: #faf5ff;
   transition: border-color 0.15s, background 0.15s;
 }
-.search-input:focus { border-color: #2563eb; background: white; box-shadow: 0 0 0 3px rgba(37,99,235,0.08); }
+.search-input:focus { border-color: #7C3AED; background: white; box-shadow: 0 0 0 3px rgba(124,58,237,0.08); }
 .search-input::placeholder { color: #9ca3af; }
 
 .btn-export {
@@ -500,7 +521,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   transition: all 0.12s;
   white-space: nowrap;
 }
-.btn-export:hover { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+.btn-export:hover { border-color: #7C3AED; color: #7C3AED; background: #faf5ff; }
 
 /* ── Custom confirm modal ────────────────────────────────────────────────── */
 
@@ -510,7 +531,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   padding: 1.5rem;
   width: 100%;
   max-width: 22rem;
-  box-shadow: 0 20px 50px rgba(0,0,0,0.22), 0 0 0 1px rgba(0,0,0,0.04);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.22), 0 0 0 1px rgba(124,58,237,0.06);
   animation: modalIn 0.18s cubic-bezier(0.34,1.56,0.64,1);
 }
 .confirm-icon { font-size: 1.75rem; margin-bottom: 0.625rem; }
@@ -522,7 +543,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 .btn-text {
   font-size: 0.8rem;
   font-weight: 500;
-  color: #2563eb;
+  color: #7C3AED;
   background: none;
   border: none;
   cursor: pointer;
@@ -530,7 +551,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   border-radius: 0.35rem;
   transition: background 0.12s;
 }
-.btn-text:hover { background: #eff6ff; }
+.btn-text:hover { background: #f5f3ff; }
 
 /* ── Skeleton loader ─────────────────────────────────────────────────────── */
 
@@ -540,7 +561,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 }
 
 .skeleton {
-  background: linear-gradient(90deg, #f0f2f5 25%, #e8eaed 50%, #f0f2f5 75%);
+  background: linear-gradient(90deg, #f5f3ff 25%, #ede9fe 50%, #f5f3ff 75%);
   background-size: 600px 100%;
   animation: shimmer 1.4s ease-in-out infinite;
   border-radius: 0.3rem;
@@ -578,7 +599,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 .empty-icon {
   width: 3rem;
   height: 3rem;
-  color: #d1d5db;
+  color: #c4b5fd;
   margin-bottom: 0.375rem;
 }
 
@@ -661,7 +682,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
 
 .section-loading .spinner {
   border-color: rgba(0,0,0,0.1);
-  border-top-color: #6366f1;
+  border-top-color: #7C3AED;
 }
 
 /* ── Scan log ────────────────────────────────────────────────────────────── */
@@ -680,7 +701,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   width: 2.5rem;
   height: 2.5rem;
   border-radius: 50%;
-  border: 2px solid #e5e7eb;
+  border: 2px solid #ede9fe;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -693,7 +714,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans
   position: absolute;
   inset: -6px;
   border-radius: 50%;
-  border: 2px solid #e5e7eb;
+  border: 2px solid #ede9fe;
   animation: scanPing 2s ease-in-out infinite;
 }
 

@@ -860,7 +860,21 @@ function dismissBanner() {
 function openModal(id)  { document.getElementById(id).classList.remove('hidden'); }
 function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
 
-function openAddItemModal() { openModal('modal-add-item'); }
+const _ITEM_ID_EXAMPLES = [
+  'SKU-1023', 'BOLT-M6-SS', 'PCB-CTRL-V2', 'CAP-100UF', 'MOT-DC-12V',
+  'RFID-RC522', 'ESP32-WROOM', 'FUSE-5A-250V', 'LED-RED-5MM', 'CABLE-USB-C',
+  'RELAY-5V-10A', 'SENSOR-DHT22', 'CONN-RJ45', 'FAN-80MM-12V', 'WIRE-AWG22',
+];
+let _itemIdExIdx = 0;
+
+function openAddItemModal() {
+  const idInput = document.getElementById('add-item-id');
+  if (idInput) {
+    idInput.placeholder = 'e.g. ' + _ITEM_ID_EXAMPLES[_itemIdExIdx % _ITEM_ID_EXAMPLES.length];
+    _itemIdExIdx++;
+  }
+  openModal('modal-add-item');
+}
 
 function openEditModal(item) {
   const form = document.getElementById('form-edit-item');
@@ -1945,8 +1959,9 @@ async function deleteWebhook(id) {
 
 async function testWebhook(id) {
   const r = await fetch(`/api/webhooks/${id}/test`, { method:'POST' });
-  if (r.ok) showToast('Test payload sent', 'success');
-  else showToast('Test failed — check the endpoint URL', 'error');
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) showToast(d.message || 'Test payload delivered', 'success');
+  else showToast(d.error || 'Test failed — endpoint unreachable', 'error');
 }
 
 document.addEventListener('DOMContentLoaded', () => {

@@ -60,34 +60,42 @@ def _clear_failures(ip: str):
 
 # ── Webhook helper ────────────────────────────────────────────────────────────
 
-def _fire_webhooks(event_type: str, data: dict):
-    """Fire matching active webhooks asynchronously."""
-    def _send(url, payload):
-        try:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode(),
-                headers={'Content-Type': 'application/json'},
-                method='POST',
-            )
-            urllib.request.urlopen(req, timeout=5)
-        except Exception as e:
-            print(f'[Webhook] {url} failed: {e}')
+def _webhook_post(url: str, payload: dict):
+    """POST a JSON payload to a single webhook URL (blocking — call from thread)."""
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={'Content-Type': 'application/json', 'User-Agent': 'SmartInventory/1.0'},
+            method='POST',
+        )
+        urllib.request.urlopen(req, timeout=5)
+        print(f'[Webhook] OK  {url}')
+    except Exception as e:
+        print(f'[Webhook] ERR {url} — {e}')
 
+
+def _fire_webhooks(event_type: str, data: dict):
+    """Fire all active webhooks that subscribe to event_type (async, daemon threads)."""
     try:
         conn = get_db()
         c = conn.cursor()
-        c.execute("SELECT url FROM webhooks WHERE active = 1 AND (events = '*' OR instr(events, ?) > 0)",
-                  (event_type,))
+        # Match '*' wildcard OR exact word in comma-separated events list
+        c.execute(
+            "SELECT url FROM webhooks WHERE active = 1 AND ("
+            "  events = '*' OR events = ? OR "
+            "  (',' || events || ',') LIKE ('%,' || ? || ',%')"
+            ")",
+            (event_type, event_type),
+        )
         urls = [r['url'] for r in c.fetchall()]
         conn.close()
     except Exception:
         return
 
-    payload = {'event': event_type, 'data': data,
-               'timestamp': datetime.now().isoformat()}
+    payload = {'event': event_type, 'data': data, 'timestamp': datetime.now().isoformat()}
     for url in urls:
-        threading.Thread(target=_send, args=(url, payload), daemon=True).start()
+        threading.Thread(target=_webhook_post, args=(url, payload), daemon=True).start()
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -1056,13 +1064,34 @@ def delete_webhook(wh_id):
 def test_webhook(wh_id):
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT url FROM webhooks WHERE id = ?', (wh_id,))
+    c.execute('SELECT url, name FROM webhooks WHERE id = ?', (wh_id,))
     row = c.fetchone()
     conn.close()
     if not row:
         return jsonify({'error': 'Webhook not found'}), 404
-    _fire_webhooks('test', {'message': 'Test ping from Smart Inventory System'})
-    return jsonify({'status': 'ok', 'message': 'Test payload sent'})
+
+    payload = {
+        'event': 'test',
+        'data': {'message': 'Test ping from Smart Inventory System', 'webhook_name': row['name']},
+        'timestamp': datetime.now().isoformat(),
+    }
+    ok = True
+    try:
+        req = urllib.request.Request(
+            row['url'],
+            data=json.dumps(payload).encode(),
+            headers={'Content-Type': 'application/json', 'User-Agent': 'SmartInventory/1.0'},
+            method='POST',
+        )
+        urllib.request.urlopen(req, timeout=5)
+        print(f'[Webhook] Test OK  {row["url"]}')
+    except Exception as e:
+        print(f'[Webhook] Test ERR {row["url"]} — {e}')
+        ok = False
+
+    if ok:
+        return jsonify({'status': 'ok', 'message': f'Test payload delivered to {row["url"]}'})
+    return jsonify({'error': f'Delivery failed — check the endpoint URL and ensure it is reachable'}), 502
 
 
 # ── Cartons ───────────────────────────────────────────────────────────────────

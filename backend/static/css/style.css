@@ -724,6 +724,83 @@ body {
   100% { opacity: 0; transform: scale(1.5);  }
 }
 
+/* ── Tab transition ──────────────────────────────────────────────────────── */
+
+.tab-content.active {
+  animation: tabFadeIn 0.2s ease;
+}
+@keyframes tabFadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Sticky table header ─────────────────────────────────────────────────── */
+
+.sticky-head th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #faf5ff;
+  box-shadow: 0 1px 0 #ede9fe;
+}
+
+/* ── Topbar user display ─────────────────────────────────────────────────── */
+
+.topbar-role {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.18rem 0.55rem;
+  border-radius: 9999px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.role-admin   { background: #fee2e2; color: #991b1b; }
+.role-manager { background: #fef3c7; color: #92400e; }
+.role-viewer  { background: #f1f5f9; color: #475569; }
+
+/* ── Pipeline stage cards ────────────────────────────────────────────────── */
+
+#pipeline-flow > div {
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+#pipeline-flow > div:hover {
+  transform: translateY(-2px);
+}
+#pipeline-flow .rounded-lg {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+/* ── Rack utilisation chips ──────────────────────────────────────────────── */
+
+.rack-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.625rem 1rem;
+  background: #faf5ff;
+  border: 1px solid #ede9fe;
+  border-radius: 0.5rem;
+  min-width: 80px;
+  transition: background 0.15s;
+}
+.rack-chip:hover { background: #ede9fe; }
+.rack-chip-count { font-family: 'Fira Code', monospace; font-size: 1.25rem; font-weight: 700; color: #7C3AED; }
+.rack-chip-label { font-size: 0.7rem; color: #6b7280; margin-top: 0.1rem; font-weight: 500; }
+
+/* ── Quick stats divider ─────────────────────────────────────────────────── */
+
+.qs-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #f3e8ff;
+  font-size: 0.845rem;
+}
+.qs-row:last-child { border-bottom: none; }
+.qs-label { color: #6b7280; }
+.qs-value { font-weight: 600; font-family: 'Fira Code', monospace; color: #1f2937; }
+
 /* ── Print ───────────────────────────────────────────────────────────────── */
 
 @media print {

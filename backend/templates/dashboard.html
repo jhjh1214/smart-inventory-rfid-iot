@@ -110,6 +110,10 @@
       </div>
       <div class="flex items-center gap-4">
         <span id="clock" class="text-slate-500 text-sm tabular-nums"></span>
+        <div class="flex items-center gap-2">
+          <span id="topbar-username" class="text-sm font-medium" style="color:#4b5563"></span>
+          <span id="topbar-role-pill" class="topbar-role"></span>
+        </div>
         <span id="scan-live-badge" class="hidden live-badge">LIVE SCAN</span>
       </div>
     </header>
@@ -215,7 +219,7 @@
               CSV
             </button>
           </div>
-          <ul id="scan-log" class="divide-y divide-slate-100 max-h-72 overflow-y-auto">
+          <ul id="scan-log" class="divide-y divide-purple-100 max-h-72 overflow-y-auto">
             <li class="py-3 text-slate-400 text-sm text-center">No scans yet</li>
           </ul>
         </div>
@@ -275,7 +279,7 @@
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Item</th>
                 <th class="th text-right">Qty</th>
@@ -286,8 +290,8 @@
                 <th class="th text-center">Actions</th>
               </tr>
             </thead>
-            <tbody id="inventory-tbody" class="divide-y divide-slate-100">
-              <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+            <tbody id="inventory-tbody" class="divide-y divide-purple-100">
+              <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -329,7 +333,7 @@
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Item</th>
                 <th class="th text-center">ABC</th>
@@ -340,7 +344,7 @@
                 <th class="th text-center">Risk</th>
               </tr>
             </thead>
-            <tbody id="analytics-tbody" class="divide-y divide-slate-100">
+            <tbody id="analytics-tbody" class="divide-y divide-purple-100">
               <tr><td colspan="7" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
             </tbody>
           </table>
@@ -408,7 +412,7 @@
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Tag UID</th>
                 <th class="th text-left">Item</th>
@@ -418,7 +422,7 @@
                 <th class="th text-center">Actions</th>
               </tr>
             </thead>
-            <tbody id="tags-tbody" class="divide-y divide-slate-100">
+            <tbody id="tags-tbody" class="divide-y divide-purple-100">
               <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">No tags registered</td></tr>
             </tbody>
           </table>
@@ -444,7 +448,7 @@
           <button onclick="setAlertFilter('low_stock')"    class="btn-sm btn-sm-neutral" data-filter="low_stock">Low Stock</button>
           <button onclick="setAlertFilter('out_of_stock')" class="btn-sm btn-sm-neutral" data-filter="out_of_stock">Out of Stock</button>
         </div>
-        <ul id="alerts-list" class="divide-y divide-slate-100 max-h-[60vh] overflow-y-auto">
+        <ul id="alerts-list" class="divide-y divide-purple-100 max-h-[60vh] overflow-y-auto">
           <li class="py-6 text-slate-400 text-sm text-center">No alerts</li>
         </ul>
       </div>
@@ -535,7 +539,7 @@
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Employee</th>
                 <th class="th text-center">Role</th>
@@ -584,7 +588,7 @@
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Username</th>
                 <th class="th text-center">Role</th>
@@ -612,7 +616,7 @@
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Name</th>
                 <th class="th text-left">URL</th>
@@ -646,7 +650,7 @@
         <h2 class="card-title mb-4">Per-Item Stage Breakdown</h2>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Item</th>
                 <th class="th text-center">Tagged</th>
@@ -689,7 +693,7 @@
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Item</th>
                 <th class="th text-right">Expected</th>
@@ -722,6 +726,9 @@
             CSV
           </button>
         </div>
+        <div class="table-toolbar mb-3">
+          <input id="audit-search" class="search-input" placeholder="Search by item, action, user, device…" oninput="filterAuditSearch(this.value)" />
+        </div>
         <div id="audit-filters" class="flex gap-2 mb-4 flex-wrap">
           <button onclick="setAuditFilter('all')"       class="btn-sm btn-sm-edit"    data-filter="all">All</button>
           <button onclick="setAuditFilter('dashboard')" class="btn-sm btn-sm-neutral" data-filter="dashboard">Dashboard Actions</button>
@@ -730,7 +737,7 @@
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm table-row-hover">
-            <thead class="table-head">
+            <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Time</th>
                 <th class="th text-left">Action</th>
@@ -742,7 +749,7 @@
                 <th class="th text-left">Note</th>
               </tr>
             </thead>
-            <tbody id="audit-tbody" class="divide-y divide-slate-100">
+            <tbody id="audit-tbody" class="divide-y divide-purple-100">
               <tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
             </tbody>
           </table>

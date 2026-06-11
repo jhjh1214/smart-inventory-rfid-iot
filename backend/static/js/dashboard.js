@@ -43,6 +43,10 @@ let _auditFilter  = 'all';
     const me = await r.json();
     currentRole = me.role;
     document.getElementById('user-info').textContent = `${me.username} (${me.role})`;
+    const tbUser = document.getElementById('topbar-username');
+    const tbPill = document.getElementById('topbar-role-pill');
+    if (tbUser) tbUser.textContent = me.username;
+    if (tbPill) { tbPill.textContent = me.role; tbPill.className = `topbar-role role-${me.role}`; }
   } catch {
     window.location.href = '/login';
     return;
@@ -1471,7 +1475,23 @@ function setAuditFilter(type) {
     const active = btn.dataset.filter === type;
     btn.className = `btn-sm ${active ? 'btn-sm-edit' : 'btn-sm-neutral'}`;
   });
+  const srch = document.getElementById('audit-search');
+  if (srch) srch.value = '';
   fetchAudit();
+}
+
+function filterAuditSearch(q) {
+  const query = q.trim().toLowerCase();
+  if (!query) { renderAuditTable(_audit); return; }
+  renderAuditTable(_audit.filter(t =>
+    (t.item_name   || '').toLowerCase().includes(query) ||
+    (t.item_id     || '').toLowerCase().includes(query) ||
+    (t.action      || '').toLowerCase().includes(query) ||
+    (t.performed_by|| '').toLowerCase().includes(query) ||
+    (t.device_id   || '').toLowerCase().includes(query) ||
+    (t.tag_uid     || '').toLowerCase().includes(query) ||
+    (t.note        || '').toLowerCase().includes(query)
+  ));
 }
 
 function exportAuditCSV() {

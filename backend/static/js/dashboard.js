@@ -1237,10 +1237,6 @@ async function fetchPipeline() {
     renderPipelineFlow(data.totals);
     renderPipelineItems(data.per_item, items);
     renderRackStats(data.rack_stats);
-    renderWriteJobs(data.jobs);
-    populateJobItemSelect(items);
-    const card = document.getElementById('write-job-card');
-    if (card) card.style.display = (currentRole === 'admin' || currentRole === 'manager') ? '' : 'none';
     fetchPurchaseOrders('');
   } catch {}
 }
@@ -1305,67 +1301,6 @@ function renderRackStats(rackStats) {
       <div class="text-xs text-green-600 font-semibold mt-0.5">${esc(r.rack_location)}</div>
     </div>`).join('');
 }
-
-function renderWriteJobs(jobs) {
-  const tbody = document.getElementById('jobs-tbody');
-  if (!tbody) return;
-  if (!jobs.length) {
-    tbody.innerHTML = _tableEmpty(4, 'box', 'No write jobs yet',
-      'Dispatch a write job to the factory ESP32 to start tagging inventory items.');
-    return;
-  }
-  const jbBadge = s => {
-    const map = { pending:'badge-warning', in_progress:'badge-info', complete:'badge-success' };
-    return `<span class="badge ${map[s] || 'badge-neutral'}">${esc(s)}</span>`;
-  };
-  tbody.innerHTML = jobs.map(j => `
-    <tr>
-      <td class="px-4 py-3">
-        <div class="text-sm font-medium text-gray-800">${esc(j.item_name || j.item_id)}</div>
-        <div class="text-xs text-gray-400">${fmtDate(j.created_at)}</div>
-      </td>
-      <td class="px-4 py-3 text-right font-mono text-sm">${j.quantity}</td>
-      <td class="px-4 py-3 text-right font-mono text-sm text-green-600">${j.written}</td>
-      <td class="px-4 py-3 text-center">${jbBadge(j.status)}</td>
-    </tr>`).join('');
-}
-
-function populateJobItemSelect(items) {
-  const sel = document.getElementById('job-item-id');
-  if (!sel) return;
-  const current = sel.value;
-  sel.innerHTML = '<option value="">Select item…</option>' +
-    items.map(i => `<option value="${esc(i.id)}" ${i.id === current ? 'selected':''}>${esc(i.name)}</option>`).join('');
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const form = document.getElementById('form-write-job');
-  if (form) {
-    form.addEventListener('submit', async e => {
-      e.preventDefault();
-      const item_id  = document.getElementById('job-item-id').value;
-      const quantity = parseInt(document.getElementById('job-quantity').value);
-      if (!item_id) return showToast('Select an item first', 'warning');
-      if (quantity < 1) return showToast('Quantity must be at least 1', 'warning');
-      const btn = form.querySelector('button[type=submit]');
-      _btnLoad(btn, true, 'Dispatching…');
-      try {
-        const r = await fetch('/api/factory/jobs', {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ item_id, quantity }),
-        });
-        const d = await r.json().catch(() => ({}));
-        if (r.ok) {
-          form.reset();
-          fetchPipeline();
-          showToast(`Job sent: ${quantity} tags for ${item_id}`, 'success');
-        } else {
-          showToast(d.error || 'Failed to send job', 'error');
-        }
-      } finally { _btnLoad(btn, false, 'Send Job to ESP32'); }
-    });
-  }
-});
 
 // ── Export helpers ────────────────────────────────────────────────────────────
 function _downloadCSV(rows, filename) {

@@ -95,7 +95,7 @@ let _auditFilter  = 'all';
 
   _kpiLoading();
   await Promise.all([refreshSummary(), fetchTransactions(), fetchItems()]);
-  await Promise.all([fetchAnalytics(), fetchTags(), fetchAlerts()]);
+  await Promise.all([fetchAnalytics(), fetchTags(), fetchRackInventory(), fetchAlerts()]);
   fetchStatus();
 
   connectSSE();
@@ -360,7 +360,7 @@ function setupTabs() {
 
       if (tab === 'inventory')     fetchItems();
       if (tab === 'analytics')     fetchAnalytics();
-      if (tab === 'tags')          fetchTags();
+      if (tab === 'tags')          { fetchTags(); fetchRackInventory(); }
       if (tab === 'alerts')        fetchAlerts();
       if (tab === 'workers')       { fetchWorkers(); fetchUsers(); fetchWebhooks(); }
       if (tab === 'manufacturing') { fetchPipeline(); fetchPurchaseOrders(''); fetchCartons(); fetchPallets(); }
@@ -755,6 +755,39 @@ function filterTags() {
   });
 }
 
+// ── Rack Inventory ────────────────────────────────────────────────────────────
+async function fetchRackInventory() {
+  const grid = document.getElementById('rack-inventory-grid');
+  if (!grid) return;
+  try {
+    const groups = await fetch('/api/rack').then(r => r.json());
+    const locs = Object.keys(groups).sort();
+    if (!locs.length) {
+      grid.innerHTML = '<span class="text-slate-400 text-sm col-span-full text-center py-4">No items currently racked</span>';
+      return;
+    }
+    grid.innerHTML = locs.map(loc => {
+      const items = groups[loc];
+      const rows = items.map(t =>
+        `<div class="flex items-center justify-between text-xs py-1 border-b border-purple-50 last:border-0">
+          <span class="text-slate-600 truncate">${esc(t.item_name || t.item_id)}</span>
+          <span class="font-mono text-slate-400 shrink-0 ml-2">${esc(t.uid.slice(-6))}</span>
+        </div>`
+      ).join('');
+      return `<div class="rounded-lg border border-purple-100 bg-white/60 p-3">
+        <div class="flex items-center gap-2 mb-2">
+          <svg class="w-4 h-4 text-indigo-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+          <span class="font-semibold text-sm text-slate-700">${esc(loc)}</span>
+          <span class="ml-auto text-xs text-indigo-400 font-medium">${items.length} item${items.length !== 1 ? 's' : ''}</span>
+        </div>
+        ${rows}
+      </div>`;
+    }).join('');
+  } catch {
+    if (grid) grid.innerHTML = '<span class="text-red-400 text-sm col-span-full text-center py-4">Failed to load rack inventory</span>';
+  }
+}
+
 // ── Alerts ────────────────────────────────────────────────────────────────────
 async function fetchAlerts() {
   try {
@@ -1046,6 +1079,7 @@ function connectSSE() {
       fetchTransactions();
       fetchItems().then(() => highlightItem(data.item_id));
       if (data.stage === 'received' || data.stage === 'dispatched') fetchAlerts();
+      if (data.stage === 'racked') fetchRackInventory();
       if (document.getElementById('tab-manufacturing').classList.contains('active')) fetchPipeline();
     }
 

@@ -1094,6 +1094,32 @@ def test_webhook(wh_id):
     return jsonify({'error': f'Delivery failed — check the endpoint URL and ensure it is reachable'}), 502
 
 
+# ── Rack inventory ────────────────────────────────────────────────────────────
+
+@app.route('/api/rack', methods=['GET'])
+@login_required
+def get_rack():
+    """Return all currently racked tags grouped by rack location."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        SELECT t.uid, t.item_id, t.rack_location, t.last_scan,
+               i.name AS item_name
+        FROM rfid_tags t
+        LEFT JOIN items i ON t.item_id = i.id
+        WHERE t.state = 'racked'
+        ORDER BY t.rack_location, t.last_scan DESC
+    ''')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    # Group by rack_location
+    groups = {}
+    for row in rows:
+        loc = row['rack_location'] or 'unknown'
+        groups.setdefault(loc, []).append(row)
+    return jsonify(groups)
+
+
 # ── Cartons ───────────────────────────────────────────────────────────────────
 
 @app.route('/api/cartons', methods=['GET'])

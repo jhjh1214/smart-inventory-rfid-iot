@@ -918,7 +918,7 @@ def _handle_warehouse_gate(client, payload):
 
 def _handle_warehouse_rack(client, payload):
     """received / returned -> racked, records shelf location.
-    Invalid states are logged and rejected — no silent corruption."""
+    Unknown tags are auto-registered directly as racked (rack reader used without full pipeline)."""
     tag_uid       = payload.get('tag_uid')
     item_id       = payload.get('item_id') or ''
     rack_location = payload.get('rack_location', 'unknown')
@@ -935,7 +935,26 @@ def _handle_warehouse_rack(client, payload):
     tag = _get_tag_with_item(c, tag_uid)
 
     if not tag:
+        if not item_id:
+            print(f'[MQTT] warehouse_rack: BLANK TAG {tag_uid} — no item_id on tag, scan ignored')
+            conn.close()
+            return
+        # Tag never went through factory pipeline — auto-register directly as racked
+        item = _ensure_item(c, item_id)
+        c.execute('INSERT INTO rfid_tags (uid, item_id, state, rack_location) VALUES (?, ?, ?, ?)',
+                  (tag_uid, item_id, 'racked', rack_location))
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
+                   VALUES (?, 'warehouse_rack', 0, ?, ?, ?, ?, ?)''',
+                  (item_id, item['quantity'], item['quantity'], tag_uid,
+                   f'rack:{rack_location} (auto-registered)', payload.get('device_id', 'unknown')))
+        _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
+        conn.commit()
         conn.close()
+        print(f'[MQTT] RACKED(new) {tag_uid} -> {item["name"]}  @ {rack_location}  (auto-registered)')
+        events.push({'type': 'pipeline', 'stage': 'racked',
+                     'tag_uid': tag_uid, 'item_id': item_id,
+                     'item_name': item['name'], 'rack_location': rack_location})
         return
 
     state = tag['state']

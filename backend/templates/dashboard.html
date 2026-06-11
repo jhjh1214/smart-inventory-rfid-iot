@@ -415,6 +415,20 @@
     <!-- ── TAB: RFID Tags ──────────────────────────────────────────────── -->
     <div id="tab-tags" class="tab-content p-6 space-y-4">
 
+      <!-- Rack Inventory -->
+      <div class="card">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="card-title">Rack Inventory</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Items currently racked on warehouse shelves, grouped by location.</p>
+          </div>
+          <button onclick="fetchRackInventory()" class="btn-text text-xs">Refresh</button>
+        </div>
+        <div id="rack-inventory-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <span class="text-slate-400 text-sm col-span-full text-center py-4">No items currently racked</span>
+        </div>
+      </div>
+
       <!-- State legend -->
       <div class="card">
         <div class="flex items-center justify-between mb-3 cursor-pointer select-none"

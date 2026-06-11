@@ -2,7 +2,7 @@
 #  DEVICE CONFIGURATION — edit these two sections per ESP32 board
 # ══════════════════════════════════════════════════════════════════════════════
 
-DEVICE_ID = 'esp32-01'
+DEVICE_ID = 'esp32-04'
 
 # ── WiFi networks (tried in order until one connects) ─────────────────────────
 # broker: the IP of the laptop running Mosquitto on that network.
@@ -36,8 +36,7 @@ MQTT_PORT   = 1883
 #    CS=22  return_gate
 #
 READERS = [
-    {'role': 'factory_writer', 'cs': 22, 'rack_location': None},
-    {'role': 'factory_exit',   'cs':  5, 'rack_location': None},
+    {'role': 'warehouse_rack', 'cs': 22, 'rack_location': 'A1'},
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════

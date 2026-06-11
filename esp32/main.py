@@ -15,6 +15,7 @@ Roles handled here:
 import json
 import time
 import gc
+import random
 import network
 from machine import Pin, SPI
 from umqtt.simple import MQTTClient
@@ -23,8 +24,12 @@ import config
 from rfid_reader import RFIDReader
 
 # ── Write-job state (factory_writer role) ─────────────────────────────────────
-_job        = None   # current active job dict {batch_id, item_id, quantity}
-_job_written = 0     # tags written so far in this job
+_job         = None   # current active job dict {batch_id, item_id, quantity}
+_job_written = 0      # tags written so far in this job
+
+# Demo auto-cycle: item list from config, advances on each successful write
+_demo_items = getattr(config, 'DEMO_ITEMS', [])
+_demo_idx   = 0
 
 def _on_mqtt_msg(topic, msg):
     global _job, _job_written
@@ -93,7 +98,7 @@ def init_readers():
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 def run():
-    global _job, _job_written
+    global _job, _job_written, _demo_idx
 
     connect_wifi()
     readers            = init_readers()
@@ -130,9 +135,16 @@ def run():
 
                     # ── factory_writer ────────────────────────────────────────
                     if role == 'factory_writer':
-                        write_id = None
+                        # Dashboard job takes priority; fall back to demo cycle
                         if _job and _job_written < _job.get('quantity', 0):
-                            write_id = _job['item_id']
+                            write_id  = _job['item_id']
+                            using_job = True
+                        elif _demo_items:
+                            write_id  = _demo_items[_demo_idx % len(_demo_items)]
+                            using_job = False
+                        else:
+                            write_id  = None
+                            using_job = False
 
                         uid, existing_id, wrote_ok = readers[idx].write_item_id(write_id)
                         if not uid:
@@ -144,26 +156,31 @@ def run():
                         cd[uid] = now
 
                         if wrote_ok:
-                            _job_written += 1
-                            remaining = _job['quantity'] - _job_written
+                            if using_job:
+                                _job_written += 1
+                                remaining = _job['quantity'] - _job_written
+                                batch_id  = _job.get('batch_id', '')
+                            else:
+                                # Advance demo cycle (shuffle-style: pick random offset)
+                                _demo_idx += random.randint(1, max(1, len(_demo_items) - 1))
+                                remaining = 0
+                                batch_id  = 'demo'
+
                             mqtt.publish(config.TOPIC_FACTORY_WRITTEN, json.dumps({
                                 'tag_uid':   uid,
                                 'item_id':   write_id,
-                                'batch_id':  _job.get('batch_id', ''),
+                                'batch_id':  batch_id,
                                 'device_id': config.DEVICE_ID,
-                                'written':   _job_written,
+                                'written':   _job_written if using_job else _demo_idx,
                                 'remaining': remaining,
                             }))
-                            print('[WRITER] Wrote', write_id, '->', uid,
-                                  '| remaining:', remaining)
-                            if remaining == 0:
+                            print('[WRITER] Wrote', write_id, '->', uid)
+                            if using_job and remaining == 0:
                                 print('[WRITER] Job complete:', _job.get('batch_id', ''))
                                 _job = None
                         elif existing_id:
-                            print('[WRITER] Skip — tag', uid, 'already has:', existing_id)
-                        elif write_id is None:
-                            print('[WRITER] Blank tag detected —',
-                                  'waiting for write job from dashboard')
+                            print('[WRITER] Skip — tag', uid,
+                                  'already has:', existing_id)
 
                     # ── factory_exit / warehouse_gate / warehouse_rack ─────────
                     else:

@@ -9,30 +9,26 @@ A full-stack, industrial-grade inventory management system built around RFID tag
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Manufacturing Floor       │  Warehouse              │  Returns  │
-│                            │                         │           │
-│  [factory_writer]          │  [warehouse_gate]       │[return_gate]
-│  ESP32 #1 (CS=22)          │  ESP32 #2 (CS=22)       │ESP32 #3   │
-│                            │                         │(CS=22)    │
-│  [factory_exit]            │  [warehouse_rack]       │           │
-│  ESP32 #1 (CS=5)           │  ESP32 #2 (CS=5)        │           │
-└────────────────────────────┴─────────────────────────┴───────────┘
-              │                        │                      │
-              └──────────── MQTT (Mosquitto) ─────────────────┘
-                                       │ LAN  (port 1883)
-                            ┌──────────▼──────────┐
-                            │   Flask Backend      │
-                            │   (Python + SQLite)  │
-                            │   analytics.py       │
-                            │   mqtt_subscriber.py │
-                            └──────────┬──────────┘
-                                       │ SSE (live push)
-                            ┌──────────▼──────────┐
-                            │   Web Dashboard      │
-                            │   Tailwind + Chart.js│
-                            │   http://server:5000 │
-                            └─────────────────────┘
+ ESP32 #1          ESP32 #2          ESP32 #3          ESP32 #4
+ esp32-01          esp32-02          esp32-03          esp32-04
+[factory_writer]  [factory_exit]  [warehouse_gate]  [warehouse_rack]
+      │                 │                 │                 │
+      └─────────────────┴─────────────────┴─────────────────┘
+                                  │
+                        MQTT (Mosquitto) — LAN port 1883
+                                  │
+                       ┌──────────▼──────────┐
+                       │   Flask Backend      │
+                       │   (Python + SQLite)  │
+                       │   analytics.py       │
+                       │   mqtt_subscriber.py │
+                       └──────────┬──────────┘
+                                  │ SSE (live push)
+                       ┌──────────▼──────────┐
+                       │   Web Dashboard      │
+                       │   Tailwind + Chart.js│
+                       │   http://server:5000 │
+                       └─────────────────────┘
 ```
 
 ### On-Premise Deployment
@@ -54,43 +50,44 @@ This makes the system a plug-in module for an existing ERP environment — selli
 
 | Qty | Part | Purpose |
 |-----|------|---------|
-| 3 | ESP32 Dev Board | RFID pipeline nodes |
-| 5 | RC522 RFID Reader (MFRC522) | One per station |
+| 4 | ESP32 Dev Board | RFID pipeline nodes (one per station) |
+| 4 | RC522 RFID Reader (MFRC522) | One per board |
 | N | MIFARE Classic 1K tags | Product stickers + worker badges |
-| 1 | Mini-PC / Raspberry Pi 4 | Flask server + Mosquitto broker |
+| 1 | PC / Laptop | Flask server + Mosquitto broker |
 
-### ESP32 Pin Wiring (all boards identical except CS pins)
+### ESP32 Pin Wiring (identical on every board)
 
 ```
 RC522 Pin   →   ESP32 GPIO
 ─────────────────────────
-SDA (CS)    →   GPIO 22  (Reader 1)
-            →   GPIO 5   (Reader 2, if board has 2 readers)
+SDA (CS)    →   GPIO 22
 SCK         →   GPIO 19
 MOSI        →   GPIO 23
 MISO        →   GPIO 25
 GND         →   GND
 3.3V        →   3.3V
-RST         →   not required (hardwired high)
+RST         →   3.3V  (hardwired HIGH — no software reset needed)
 ```
 
-All readers on the same board share **one SPI bus** (SCK/MOSI/MISO). Only the CS line is unique per reader.
+> **Important:** RC522 runs on **3.3V only** — do NOT connect to 5V.
 
-### 3-ESP32 Reference Layout
+### 4-Board Reference Layout
 
 ```
-ESP32 #1 — Manufacturing Floor
-  CS=22  →  factory_writer   (writes item_id to blank sticker tags)
-  CS=5   →  factory_exit     (scans products leaving the factory)
+ESP32 #1 (esp32-01) — Factory Writer
+  CS=22  →  factory_writer   writes item_id to blank sticker tags (auto-cycles demo items)
 
-ESP32 #2 — Warehouse
-  CS=22  →  warehouse_gate   (smart receive / dispatch gate)
-  CS=5   →  warehouse_rack   (confirms shelf placement, records location)
+ESP32 #2 (esp32-02) — Factory Exit
+  CS=22  →  factory_exit     scans products leaving the manufacturing floor
 
-ESP32 #3 — Admin / Returns Desk
-  CS=22  →  return_gate      (customer returns — re-admits stock)
-  CS=5   →  (spare — add a second rack shelf at any time)
+ESP32 #3 (esp32-03) — Warehouse Gate
+  CS=22  →  warehouse_gate   smart gate: receives in-transit stock OR dispatches racked stock
+
+ESP32 #4 (esp32-04) — Warehouse Rack
+  CS=22  →  warehouse_rack   confirms shelf placement at rack location A1
 ```
+
+Each board runs the **same `main.py` firmware**. Only `config.py` differs per board.
 
 ---
 
@@ -472,48 +469,63 @@ inventory.company.local  →  <server LAN IP>
 
 ### 2. ESP32 Firmware
 
-**Requirements:** MicroPython flashed on each ESP32, `mpremote` or Thonny IDE
+**Requirements:** MicroPython v1.24+ flashed on each ESP32, `mpremote`, `esptool`
 
-1. Edit `esp32/config.py` — set `DEVICE_ID`, `WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_BROKER`, and the `READERS` list for each board:
+#### Step 1 — Flash MicroPython firmware (do this once per board)
 
+```
+python -m esptool --chip esp32 --port COM<N> erase-flash
+python -m esptool --chip esp32 --port COM<N> --baud 460800 write_flash -z 0x1000 ESP32_GENERIC-20260406-v1.28.0.bin
+```
+
+#### Step 2 — Set `config.py` for each board, then upload
+
+Each board uses the **same** `main.py`, `rfid_reader.py`, `mfrc522.py`. Only `config.py` changes.
+
+**Board 1 — esp32-01 — Factory Writer**
 ```python
-# ESP32 #1 — Manufacturing
-DEVICE_ID = 'esp32-factory'
-WIFI_NETWORKS = [
-    ('Office_WiFi', 'password1'),
-    ('Backup_5G',   'password2'),
-]
-MQTT_BROKER = '192.168.1.100'
+DEVICE_ID = 'esp32-01'
 READERS = [
     {'role': 'factory_writer', 'cs': 22, 'rack_location': None},
-    {'role': 'factory_exit',   'cs':  5, 'rack_location': None},
 ]
+# DEMO_ITEMS list auto-cycles item-001..item-008 when no dashboard job is active
+DEMO_ITEMS = ['item-001','item-002','item-003','item-004',
+              'item-005','item-006','item-007','item-008']
+```
 
-# ESP32 #2 — Warehouse
-DEVICE_ID = 'esp32-warehouse'
+**Board 2 — esp32-02 — Factory Exit**
+```python
+DEVICE_ID = 'esp32-02'
+READERS = [
+    {'role': 'factory_exit', 'cs': 22, 'rack_location': None},
+]
+```
+
+**Board 3 — esp32-03 — Warehouse Gate**
+```python
+DEVICE_ID = 'esp32-03'
 READERS = [
     {'role': 'warehouse_gate', 'cs': 22, 'rack_location': None},
-    {'role': 'warehouse_rack', 'cs':  5, 'rack_location': 'A1'},
 ]
+```
 
-# ESP32 #3 — Returns
-DEVICE_ID = 'esp32-returns'
+**Board 4 — esp32-04 — Warehouse Rack**
+```python
+DEVICE_ID = 'esp32-04'
 READERS = [
-    {'role': 'return_gate', 'cs': 22, 'rack_location': None},
+    {'role': 'warehouse_rack', 'cs': 22, 'rack_location': 'A1'},
 ]
 ```
 
-2. Upload all files in `esp32/` to each board (same firmware, only `config.py` differs):
+All boards share the same WiFi credentials in `WIFI_NETWORKS`. Set the broker IP to the laptop's LAN IP (`ipconfig` to find it).
 
-```bash
-mpremote connect COM<N> cp esp32/config.py :config.py
-mpremote connect COM<N> cp esp32/main.py :main.py
-mpremote connect COM<N> cp esp32/rfid_reader.py :rfid_reader.py
-mpremote connect COM<N> cp esp32/mfrc522.py :mfrc522.py
-mpremote connect COM<N> cp esp32/boot.py :boot.py
+#### Step 3 — Upload files (run from the `esp32/` folder)
+
+```
+mpremote connect COM<N> cp config.py :config.py + cp mfrc522.py :mfrc522.py + cp rfid_reader.py :rfid_reader.py + cp main.py :main.py + reset
 ```
 
-3. Reset the board — `main.py` runs automatically on boot.
+After upload, power the board via any USB charger — `main.py` runs automatically on boot.
 
 ### 3. Write Worker Badges
 

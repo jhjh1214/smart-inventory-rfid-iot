@@ -939,7 +939,11 @@ def _handle_warehouse_rack(client, payload):
         return
 
     state = tag['state']
-    if state in ('received', 'returned', 'in'):
+    # Accept any active state — rack reader may be used without a full pipeline
+    # (tag skips factory_exit / warehouse_gate and goes straight to shelf)
+    # Only reject truly terminal states that need an explicit return first
+    if state not in ('dispatched', 'consumed'):
+        prev_state = state
         c.execute('''UPDATE rfid_tags
                    SET state = ?, rack_location = ?, last_scan = CURRENT_TIMESTAMP
                    WHERE uid = ?''', ('racked', rack_location, tag_uid))
@@ -947,17 +951,16 @@ def _handle_warehouse_rack(client, payload):
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
                    VALUES (?, 'warehouse_rack', 0, ?, ?, ?, ?, ?)''',
                   (tag['item_id'], tag['quantity'], tag['quantity'],
-                   tag_uid, f'rack:{rack_location}', payload.get('device_id', 'unknown')))
+                   tag_uid, f'rack:{rack_location} (was:{prev_state})', payload.get('device_id', 'unknown')))
         _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
         conn.commit()
         conn.close()
-        print(f'[MQTT] RACKED     {tag_uid} -> {tag["item_name"]}  @ {rack_location}')
+        print(f'[MQTT] RACKED     {tag_uid} -> {tag["item_name"]}  @ {rack_location}  (was:{prev_state})')
         events.push({'type': 'pipeline', 'stage': 'racked',
                      'tag_uid': tag_uid, 'item_id': tag['item_id'],
                      'item_name': tag['item_name'], 'rack_location': rack_location})
     else:
-        # Invalid state — log an alert instead of silently ignoring
-        print(f'[MQTT] warehouse_rack: {tag_uid} REJECTED — state={state}, expected received/returned')
+        print(f'[MQTT] warehouse_rack: {tag_uid} REJECTED — state={state}, needs return first')
         c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
                   (tag['item_id'], 'security',
                    f'RACK REJECTED: tag {tag_uid} ({tag["item_name"]}) cannot be racked '

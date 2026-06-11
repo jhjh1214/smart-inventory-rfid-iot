@@ -1065,6 +1065,214 @@ def test_webhook(wh_id):
     return jsonify({'status': 'ok', 'message': 'Test payload sent'})
 
 
+# ── Cartons ───────────────────────────────────────────────────────────────────
+
+@app.route('/api/cartons', methods=['GET'])
+@login_required
+def get_cartons():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''SELECT ca.*, i.name AS item_name
+                 FROM cartons ca LEFT JOIN items i ON i.id = ca.item_id
+                 ORDER BY ca.created_at DESC''')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route('/api/cartons', methods=['POST'])
+@manager_required
+def create_carton():
+    data       = request.get_json() or {}
+    item_id    = (data.get('item_id') or '').strip()
+    unit_count = int(data.get('unit_count') or 0)
+    note       = (data.get('note') or '').strip()
+    if not item_id or unit_count < 1:
+        return jsonify({'error': 'item_id and unit_count (>=1) required'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT id FROM items WHERE id = ?', (item_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': f'Item {item_id} does not exist'}), 404
+
+    # Auto-generate CTN id: CTN-NNNN
+    c.execute("SELECT COUNT(*) FROM cartons")
+    n = c.fetchone()[0] + 1
+    carton_id = f'CTN-{n:04d}'
+    # Ensure uniqueness
+    while True:
+        c.execute('SELECT id FROM cartons WHERE id = ?', (carton_id,))
+        if not c.fetchone():
+            break
+        n += 1
+        carton_id = f'CTN-{n:04d}'
+
+    c.execute('''INSERT INTO cartons (id, item_id, unit_count, note, created_by)
+               VALUES (?, ?, ?, ?, ?)''',
+              (carton_id, item_id, unit_count, note or None, session.get('username', 'system')))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok', 'carton_id': carton_id}), 201
+
+
+@app.route('/api/cartons/<carton_id>/tag', methods=['PUT'])
+@manager_required
+def assign_carton_tag(carton_id):
+    """Manually link a scanned tag UID to a carton (dashboard override)."""
+    data    = request.get_json() or {}
+    tag_uid = (data.get('tag_uid') or '').strip().upper()
+    if not tag_uid:
+        return jsonify({'error': 'tag_uid required'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM cartons WHERE id = ?', (carton_id.upper(),))
+    carton = c.fetchone()
+    if not carton:
+        conn.close()
+        return jsonify({'error': 'Carton not found'}), 404
+
+    c.execute('UPDATE cartons SET tag_uid = ? WHERE id = ?', (tag_uid, carton_id.upper()))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/cartons/<carton_id>', methods=['DELETE'])
+@manager_required
+def delete_carton(carton_id):
+    conn = get_db()
+    conn.execute('DELETE FROM pallet_cartons WHERE carton_id = ?', (carton_id.upper(),))
+    conn.execute('DELETE FROM cartons WHERE id = ?', (carton_id.upper(),))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+# ── Pallets ───────────────────────────────────────────────────────────────────
+
+@app.route('/api/pallets', methods=['GET'])
+@login_required
+def get_pallets():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM pallets ORDER BY created_at DESC')
+    pallets = [dict(r) for r in c.fetchall()]
+
+    # Attach carton summary to each pallet
+    for p in pallets:
+        c.execute('''SELECT ca.*, i.name AS item_name
+                     FROM cartons ca
+                     JOIN pallet_cartons pc ON pc.carton_id = ca.id
+                     LEFT JOIN items i ON i.id = ca.item_id
+                     WHERE pc.pallet_id = ?
+                     ORDER BY ca.id''', (p['id'],))
+        p['cartons']    = [dict(r) for r in c.fetchall()]
+        p['total_units'] = sum(ca['unit_count'] for ca in p['cartons'])
+
+    conn.close()
+    return jsonify(pallets)
+
+
+@app.route('/api/pallets', methods=['POST'])
+@manager_required
+def create_pallet():
+    data = request.get_json() or {}
+    note = (data.get('note') or '').strip()
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM pallets")
+    n = c.fetchone()[0] + 1
+    pallet_id = f'PLT-{n:04d}'
+    while True:
+        c.execute('SELECT id FROM pallets WHERE id = ?', (pallet_id,))
+        if not c.fetchone():
+            break
+        n += 1
+        pallet_id = f'PLT-{n:04d}'
+
+    c.execute('INSERT INTO pallets (id, note, created_by) VALUES (?, ?, ?)',
+              (pallet_id, note or None, session.get('username', 'system')))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok', 'pallet_id': pallet_id}), 201
+
+
+@app.route('/api/pallets/<pallet_id>/cartons', methods=['POST'])
+@manager_required
+def add_carton_to_pallet(pallet_id):
+    data      = request.get_json() or {}
+    carton_id = (data.get('carton_id') or '').strip().upper()
+    if not carton_id:
+        return jsonify({'error': 'carton_id required'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT id FROM pallets WHERE id = ?', (pallet_id.upper(),))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': 'Pallet not found'}), 404
+    c.execute('SELECT id FROM cartons WHERE id = ?', (carton_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': 'Carton not found'}), 404
+
+    try:
+        c.execute('INSERT INTO pallet_cartons (pallet_id, carton_id) VALUES (?, ?)',
+                  (pallet_id.upper(), carton_id))
+        conn.commit()
+    except Exception:
+        conn.close()
+        return jsonify({'error': 'Carton already on this pallet'}), 409
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/pallets/<pallet_id>/cartons/<carton_id>', methods=['DELETE'])
+@manager_required
+def remove_carton_from_pallet(pallet_id, carton_id):
+    conn = get_db()
+    conn.execute('DELETE FROM pallet_cartons WHERE pallet_id=? AND carton_id=?',
+                 (pallet_id.upper(), carton_id.upper()))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/pallets/<pallet_id>/tag', methods=['PUT'])
+@manager_required
+def assign_pallet_tag(pallet_id):
+    data    = request.get_json() or {}
+    tag_uid = (data.get('tag_uid') or '').strip().upper()
+    if not tag_uid:
+        return jsonify({'error': 'tag_uid required'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT id FROM pallets WHERE id = ?', (pallet_id.upper(),))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': 'Pallet not found'}), 404
+    c.execute('UPDATE pallets SET tag_uid = ? WHERE id = ?', (tag_uid, pallet_id.upper()))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/pallets/<pallet_id>', methods=['DELETE'])
+@manager_required
+def delete_pallet(pallet_id):
+    conn = get_db()
+    conn.execute('DELETE FROM pallet_cartons WHERE pallet_id = ?', (pallet_id.upper(),))
+    conn.execute('DELETE FROM pallets WHERE id = ?', (pallet_id.upper(),))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
 # ── Export / Import ───────────────────────────────────────────────────────────
 
 @app.route('/api/export/backup')

@@ -55,6 +55,15 @@ SCAN_COOLDOWN   = 2   # seconds — suppress re-scan of same UID per reader
 STATUS_INTERVAL = 30  # seconds between MQTT heartbeats
 DEBUG           = True
 
+# ── Worker authentication ──────────────────────────────────────────────────────
+# Workers tap their RFID badge (EMP-XXX) at a station to authenticate.
+# Item/carton/pallet scans are attributed to that worker for the next N seconds.
+LED_PIN             = 2    # GPIO2 — onboard LED (active HIGH on most ESP32 dev boards)
+LED_ACTIVE_LOW      = False  # set True if your board's LED is active LOW
+WORKER_AUTH_TIMEOUT = 300   # seconds — sliding-window session TTL per reader
+REQUIRE_WORKER_AUTH = True   # True: item scans silently blocked until badge tapped
+                              # False: item scans proceed but logged as 'system'
+
 # ── MQTT authentication (leave blank if broker has no auth) ───────────────────
 MQTT_USER     = ''
 MQTT_PASSWORD = ''

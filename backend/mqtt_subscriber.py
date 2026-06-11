@@ -233,11 +233,21 @@ def _performed_by(device_id):
     return f'{w["name"]} ({w["employee_id"]})' if w else 'system'
 
 
-def _attach_worker(c, txn_id, device_id):
-    """Update performed_by on just-inserted transaction row."""
-    label = _performed_by(device_id)
+def _attach_worker(c, txn_id, device_id, payload_worker_id=None):
+    """Update performed_by and worker_id on just-inserted transaction row.
+
+    payload_worker_id — EMP-XXX sent directly by the ESP32 firmware (new).
+    Falls back to the server-side session lookup for older firmware.
+    """
+    label  = _performed_by(device_id)
+    worker = _get_current_worker(device_id)
+    emp_id = (worker or {}).get('employee_id') or payload_worker_id
     if label != 'system':
-        c.execute('UPDATE transactions SET performed_by = ? WHERE id = ?', (label, txn_id))
+        c.execute('UPDATE transactions SET performed_by = ?, worker_id = ? WHERE id = ?',
+                  (label, emp_id, txn_id))
+    elif emp_id:
+        # New firmware sent worker_id but no server session yet — store what we have
+        c.execute('UPDATE transactions SET worker_id = ? WHERE id = ?', (emp_id, txn_id))
 
 
 def _handle_worker_badge(source_topic, payload):
@@ -302,14 +312,400 @@ def get_worker_sessions():
     }
 
 
+# ── Tag-type detection helpers ────────────────────────────────────────────────
+
+def _is_carton(item_id):
+    return item_id and item_id.upper().startswith('CTN-')
+
+def _is_pallet(item_id):
+    return item_id and item_id.upper().startswith('PLT-')
+
+
+# ── Carton sub-handlers ───────────────────────────────────────────────────────
+
+def _carton_factory_written(c, conn, payload):
+    """Register a freshly-written carton RFID tag."""
+    tag_uid   = payload.get('tag_uid')
+    carton_id = (payload.get('item_id') or '').upper()
+    device_id = payload.get('device_id', 'unknown')
+
+    c.execute('SELECT * FROM cartons WHERE id = ?', (carton_id,))
+    carton = c.fetchone()
+    if not carton:
+        print(f'[MQTT] carton_written: unknown carton {carton_id}')
+        conn.close(); return
+
+    if not carton['tag_uid']:
+        c.execute('UPDATE cartons SET tag_uid = ? WHERE id = ?', (tag_uid, carton_id))
+
+    c.execute('SELECT uid FROM rfid_tags WHERE uid = ?', (tag_uid,))
+    if not c.fetchone():
+        c.execute('''INSERT INTO rfid_tags (uid, item_id, state, tag_level, unit_count)
+                   VALUES (?, ?, 'tagged', 'carton', ?)''',
+                  (tag_uid, carton['item_id'], carton['unit_count']))
+
+    c.execute('''INSERT INTO transactions
+               (item_id, action, quantity_change, previous_quantity, new_quantity,
+                tag_uid, note, device_id)
+               VALUES (?, 'tag_write', 0,
+                       (SELECT quantity FROM items WHERE id = ?),
+                       (SELECT quantity FROM items WHERE id = ?),
+                       ?, ?, ?)''',
+              (carton['item_id'], carton['item_id'], carton['item_id'],
+               tag_uid, f'carton_tag:{carton_id} ({carton["unit_count"]} units)', device_id))
+    _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
+    conn.commit(); conn.close()
+    print(f'[MQTT] CARTON TAG {tag_uid} -> {carton_id} ({carton["unit_count"]}× {carton["item_id"]})')
+    events.push({'type': 'pipeline', 'stage': 'tagged', 'tag_uid': tag_uid,
+                 'item_id': carton_id, 'item_name': f'Carton {carton_id}',
+                 'tag_level': 'carton', 'unit_count': carton['unit_count']})
+
+
+def _pallet_factory_written(c, conn, payload):
+    """Register a freshly-written pallet RFID tag."""
+    tag_uid   = payload.get('tag_uid')
+    pallet_id = (payload.get('item_id') or '').upper()
+    device_id = payload.get('device_id', 'unknown')
+
+    c.execute('SELECT * FROM pallets WHERE id = ?', (pallet_id,))
+    pallet = c.fetchone()
+    if not pallet:
+        print(f'[MQTT] pallet_written: unknown pallet {pallet_id}')
+        conn.close(); return
+
+    if not pallet['tag_uid']:
+        c.execute('UPDATE pallets SET tag_uid = ? WHERE id = ?', (tag_uid, pallet_id))
+
+    c.execute('SELECT uid FROM rfid_tags WHERE uid = ?', (tag_uid,))
+    if not c.fetchone():
+        c.execute('''INSERT INTO rfid_tags (uid, item_id, state, tag_level)
+                   VALUES (?, ?, 'tagged', 'pallet')''', (tag_uid, pallet_id))
+
+    conn.commit(); conn.close()
+    print(f'[MQTT] PALLET TAG {tag_uid} -> {pallet_id}')
+    events.push({'type': 'pipeline', 'stage': 'tagged', 'tag_uid': tag_uid,
+                 'item_id': pallet_id, 'item_name': f'Pallet {pallet_id}',
+                 'tag_level': 'pallet'})
+
+
+def _carton_factory_exit(c, conn, payload):
+    """Carton leaves factory floor — transition to in_transit."""
+    carton_id = (payload.get('item_id') or '').upper()
+    tag_uid   = payload.get('tag_uid')
+    device_id = payload.get('device_id', 'unknown')
+
+    c.execute('SELECT * FROM cartons WHERE id = ?', (carton_id,))
+    carton = c.fetchone()
+    if not carton:
+        print(f'[MQTT] carton_exit: unknown carton {carton_id}'); conn.close(); return
+
+    c.execute('SELECT state FROM rfid_tags WHERE uid = ?', (tag_uid,))
+    row = c.fetchone()
+    if row:
+        if row['state'] not in ('tagged', 'out', 'created'):
+            print(f'[MQTT] carton_exit: {carton_id} state={row["state"]}, skip')
+            conn.close(); return
+        c.execute('UPDATE rfid_tags SET state=?, last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+                  ('in_transit', tag_uid))
+    else:
+        c.execute('''INSERT INTO rfid_tags (uid, item_id, state, tag_level, unit_count)
+                   VALUES (?, ?, 'in_transit', 'carton', ?)''',
+                  (tag_uid, carton['item_id'], carton['unit_count']))
+
+    if not carton['tag_uid']:
+        c.execute('UPDATE cartons SET tag_uid=? WHERE id=?', (tag_uid, carton_id))
+    c.execute("UPDATE cartons SET state='in_transit' WHERE id=?", (carton_id,))
+
+    c.execute('''INSERT INTO transactions
+               (item_id, action, quantity_change, previous_quantity, new_quantity,
+                tag_uid, note, device_id)
+               VALUES (?, 'factory_exit', 0,
+                       (SELECT quantity FROM items WHERE id=?),
+                       (SELECT quantity FROM items WHERE id=?),
+                       ?, ?, ?)''',
+              (carton['item_id'], carton['item_id'], carton['item_id'],
+               tag_uid, f'carton:{carton_id} ({carton["unit_count"]} units)', device_id))
+    _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
+    conn.commit(); conn.close()
+    print(f'[MQTT] CARTON EXIT {carton_id} ({carton["unit_count"]}× {carton["item_id"]})')
+    events.push({'type': 'pipeline', 'stage': 'in_transit', 'tag_uid': tag_uid,
+                 'item_id': carton_id,
+                 'item_name': f'Carton {carton_id} ({carton["unit_count"]}× {carton["item_id"]})',
+                 'tag_level': 'carton', 'unit_count': carton['unit_count']})
+
+
+def _carton_warehouse_gate(c, conn, client, payload):
+    """Carton arrives at (or dispatches from) warehouse gate."""
+    carton_id = (payload.get('item_id') or '').upper()
+    tag_uid   = payload.get('tag_uid')
+    device_id = payload.get('device_id', 'unknown')
+
+    c.execute('SELECT * FROM cartons WHERE id=?', (carton_id,))
+    carton = c.fetchone()
+    if not carton:
+        print(f'[MQTT] carton_gate: unknown carton {carton_id}'); conn.close(); return
+
+    c.execute('SELECT state FROM rfid_tags WHERE uid=?', (tag_uid,))
+    row   = c.fetchone()
+    state = row['state'] if row else 'in_transit'
+    units = carton['unit_count']
+
+    if state in ('in_transit', 'out', 'tagged'):
+        # ── Receive ──────────────────────────────────────────────────────────
+        c.execute('UPDATE items SET quantity=quantity+?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                  (units, carton['item_id']))
+        c.execute('SELECT quantity FROM items WHERE id=?', (carton['item_id'],))
+        new_qty = c.fetchone()['quantity']
+        prev    = new_qty - units
+
+        if row:
+            c.execute('UPDATE rfid_tags SET state=?,last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+                      ('received', tag_uid))
+        else:
+            c.execute('''INSERT INTO rfid_tags (uid, item_id, state, tag_level, unit_count)
+                       VALUES (?, ?, 'received', 'carton', ?)''',
+                      (tag_uid, carton['item_id'], units))
+        if not carton['tag_uid']:
+            c.execute('UPDATE cartons SET tag_uid=? WHERE id=?', (tag_uid, carton_id))
+        c.execute("UPDATE cartons SET state='received' WHERE id=?", (carton_id,))
+
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity,
+                    tag_uid, note, device_id)
+                   VALUES (?, 'warehouse_receive', ?, ?, ?, ?, ?, ?)''',
+                  (carton['item_id'], units, prev, new_qty,
+                   tag_uid, f'carton:{carton_id} ({units} units received)', device_id))
+        _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
+        _check_purchase_order(c, carton['item_id'])
+        conn.commit(); conn.close()
+        print(f'[MQTT] CARTON RECV  {carton_id}  qty +{units} -> {new_qty}')
+        events.push({'type': 'pipeline', 'stage': 'received', 'tag_uid': tag_uid,
+                     'item_id': carton_id,
+                     'item_name': f'Carton {carton_id} ({units}× {carton["item_id"]})',
+                     'tag_level': 'carton', 'unit_count': units, 'quantity': new_qty})
+
+    elif state in ('received', 'racked', 'returned', 'in'):
+        # ── Dispatch ─────────────────────────────────────────────────────────
+        worker = _get_current_worker(device_id)
+        if not worker or worker['role'] != 'supervisor':
+            c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
+                      (carton['item_id'], 'security',
+                       f'UNVERIFIED DISPATCH: carton {carton_id} dispatched from {device_id} '
+                       f'without supervisor'))
+            events.push({'type': 'security_alert', 'tag_uid': tag_uid,
+                         'item_id': carton_id, 'item_name': f'Carton {carton_id}',
+                         'message': f'Carton dispatch without supervisor at {device_id}'})
+
+        c.execute('UPDATE items SET quantity=MAX(0,quantity-?),updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                  (units, carton['item_id']))
+        c.execute('SELECT quantity FROM items WHERE id=?', (carton['item_id'],))
+        new_qty = c.fetchone()['quantity']
+        prev    = new_qty + units
+
+        c.execute('UPDATE rfid_tags SET state=?,last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+                  ('dispatched', tag_uid))
+        c.execute("UPDATE cartons SET state='dispatched' WHERE id=?", (carton_id,))
+
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity,
+                    tag_uid, note, device_id)
+                   VALUES (?, 'warehouse_dispatch', ?, ?, ?, ?, ?, ?)''',
+                  (carton['item_id'], -units, prev, new_qty,
+                   tag_uid, f'carton:{carton_id} ({units} units dispatched)', device_id))
+        _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
+
+        c.execute('SELECT low_stock_threshold, unit FROM items WHERE id=?', (carton['item_id'],))
+        info = c.fetchone()
+        if info:
+            _low_stock_check(c, client, carton['item_id'], carton_id,
+                             new_qty, info['low_stock_threshold'], info['unit'])
+        conn.commit(); conn.close()
+        print(f'[MQTT] CARTON DISP  {carton_id}  qty -{units} -> {new_qty}')
+        events.push({'type': 'pipeline', 'stage': 'dispatched', 'tag_uid': tag_uid,
+                     'item_id': carton_id, 'item_name': f'Carton {carton_id}',
+                     'tag_level': 'carton', 'unit_count': units, 'quantity': new_qty})
+    else:
+        print(f'[MQTT] carton_gate: {carton_id} state={state}, skip')
+        conn.close()
+
+
+def _carton_warehouse_rack(c, conn, payload):
+    """Carton placed on a shelf — transition to racked."""
+    carton_id     = (payload.get('item_id') or '').upper()
+    tag_uid       = payload.get('tag_uid')
+    rack_location = payload.get('rack_location', 'unknown')
+    device_id     = payload.get('device_id', 'unknown')
+
+    c.execute('SELECT * FROM cartons WHERE id=?', (carton_id,))
+    carton = c.fetchone()
+    if not carton:
+        conn.close(); return
+
+    c.execute('SELECT state FROM rfid_tags WHERE uid=?', (tag_uid,))
+    row = c.fetchone()
+    if not row or row['state'] not in ('received', 'returned', 'in'):
+        print(f'[MQTT] carton_rack: {carton_id} state={row["state"] if row else "?"}  skip')
+        conn.close(); return
+
+    c.execute('UPDATE rfid_tags SET state=?,rack_location=?,last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+              ('racked', rack_location, tag_uid))
+    c.execute("UPDATE cartons SET state='racked' WHERE id=?", (carton_id,))
+
+    c.execute('''INSERT INTO transactions
+               (item_id, action, quantity_change, previous_quantity, new_quantity,
+                tag_uid, note, device_id)
+               VALUES (?, 'warehouse_rack', 0,
+                       (SELECT quantity FROM items WHERE id=?),
+                       (SELECT quantity FROM items WHERE id=?),
+                       ?, ?, ?)''',
+              (carton['item_id'], carton['item_id'], carton['item_id'],
+               tag_uid, f'carton:{carton_id} racked @ {rack_location}', device_id))
+    _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
+    conn.commit(); conn.close()
+    print(f'[MQTT] CARTON RACKED  {carton_id} @ {rack_location}')
+    events.push({'type': 'pipeline', 'stage': 'racked', 'tag_uid': tag_uid,
+                 'item_id': carton_id, 'item_name': f'Carton {carton_id}',
+                 'tag_level': 'carton', 'rack_location': rack_location})
+
+
+def _pallet_warehouse_gate(c, conn, client, payload):
+    """
+    Pallet scanned at warehouse gate.
+    One scan receives ALL cartons on the pallet, grouped by item_id.
+    Dispatch of a full pallet is handled the same way (state check below).
+    """
+    pallet_id = (payload.get('item_id') or '').upper()
+    tag_uid   = payload.get('tag_uid')
+    device_id = payload.get('device_id', 'unknown')
+
+    c.execute('SELECT * FROM pallets WHERE id=?', (pallet_id,))
+    pallet = c.fetchone()
+    if not pallet:
+        print(f'[MQTT] pallet_gate: unknown pallet {pallet_id}'); conn.close(); return
+
+    c.execute('SELECT state FROM rfid_tags WHERE uid=?', (tag_uid,))
+    row   = c.fetchone()
+    state = row['state'] if row else 'in_transit'
+
+    # Load cartons on this pallet
+    c.execute('''SELECT ca.* FROM cartons ca
+                 JOIN pallet_cartons pc ON pc.carton_id = ca.id
+                 WHERE pc.pallet_id=?''', (pallet_id,))
+    cartons = c.fetchall()
+    if not cartons:
+        print(f'[MQTT] pallet_gate: pallet {pallet_id} has no cartons'); conn.close(); return
+
+    # Group unit totals by item_id
+    totals = {}
+    for ca in cartons:
+        totals[ca['item_id']] = totals.get(ca['item_id'], 0) + ca['unit_count']
+    grand_total = sum(totals.values())
+
+    if state in ('in_transit', 'out', 'tagged', 'sealed'):
+        # ── Bulk receive ─────────────────────────────────────────────────────
+        for item_id, total_units in totals.items():
+            c.execute('UPDATE items SET quantity=quantity+?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                      (total_units, item_id))
+            c.execute('SELECT quantity FROM items WHERE id=?', (item_id,))
+            new_qty = c.fetchone()['quantity']
+            prev    = new_qty - total_units
+            c.execute('''INSERT INTO transactions
+                       (item_id, action, quantity_change, previous_quantity, new_quantity,
+                        tag_uid, note, device_id)
+                       VALUES (?, 'warehouse_receive', ?, ?, ?, ?, ?, ?)''',
+                      (item_id, total_units, prev, new_qty, tag_uid,
+                       f'pallet:{pallet_id} ({total_units} units of {item_id})', device_id))
+            _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
+            _check_purchase_order(c, item_id)
+
+        # Update carton states
+        for ca in cartons:
+            if ca['tag_uid']:
+                c.execute('UPDATE rfid_tags SET state=?,last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+                          ('received', ca['tag_uid']))
+            c.execute("UPDATE cartons SET state='received' WHERE id=?", (ca['id'],))
+
+        # Update pallet tag
+        if row:
+            c.execute('UPDATE rfid_tags SET state=?,last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+                      ('received', tag_uid))
+        else:
+            c.execute('''INSERT INTO rfid_tags (uid, item_id, state, tag_level)
+                       VALUES (?, ?, 'received', 'pallet')''', (tag_uid, pallet_id))
+        if not pallet['tag_uid']:
+            c.execute('UPDATE pallets SET tag_uid=? WHERE id=?', (tag_uid, pallet_id))
+        c.execute("UPDATE pallets SET state='received' WHERE id=?", (pallet_id,))
+
+        conn.commit(); conn.close()
+        print(f'[MQTT] PALLET RECV  {pallet_id}  {len(cartons)} cartons  {grand_total} units')
+        events.push({'type': 'pipeline', 'stage': 'received', 'tag_uid': tag_uid,
+                     'item_id': pallet_id,
+                     'item_name': f'Pallet {pallet_id} ({len(cartons)} cartons, {grand_total} units)',
+                     'tag_level': 'pallet', 'unit_count': grand_total})
+
+    elif state in ('received', 'racked', 'returned', 'in'):
+        # ── Bulk dispatch ─────────────────────────────────────────────────────
+        worker = _get_current_worker(device_id)
+        if not worker or worker['role'] != 'supervisor':
+            c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
+                      (None, 'security',
+                       f'UNVERIFIED PALLET DISPATCH: {pallet_id} from {device_id} without supervisor'))
+            events.push({'type': 'security_alert', 'tag_uid': tag_uid,
+                         'item_id': pallet_id, 'item_name': f'Pallet {pallet_id}',
+                         'message': f'Pallet dispatch without supervisor at {device_id}'})
+
+        for item_id, total_units in totals.items():
+            c.execute('UPDATE items SET quantity=MAX(0,quantity-?),updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                      (total_units, item_id))
+            c.execute('SELECT quantity,low_stock_threshold,unit FROM items WHERE id=?', (item_id,))
+            info = c.fetchone()
+            new_qty = info['quantity']
+            prev    = new_qty + total_units
+            c.execute('''INSERT INTO transactions
+                       (item_id, action, quantity_change, previous_quantity, new_quantity,
+                        tag_uid, note, device_id)
+                       VALUES (?, 'warehouse_dispatch', ?, ?, ?, ?, ?, ?)''',
+                      (item_id, -total_units, prev, new_qty, tag_uid,
+                       f'pallet:{pallet_id} ({total_units} units dispatched)', device_id))
+            _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
+            _low_stock_check(c, client, item_id, pallet_id,
+                             new_qty, info['low_stock_threshold'], info['unit'])
+
+        for ca in cartons:
+            if ca['tag_uid']:
+                c.execute('UPDATE rfid_tags SET state=?,last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+                          ('dispatched', ca['tag_uid']))
+            c.execute("UPDATE cartons SET state='dispatched' WHERE id=?", (ca['id'],))
+
+        c.execute('UPDATE rfid_tags SET state=?,last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+                  ('dispatched', tag_uid))
+        c.execute("UPDATE pallets SET state='dispatched' WHERE id=?", (pallet_id,))
+        conn.commit(); conn.close()
+        print(f'[MQTT] PALLET DISP  {pallet_id}  {grand_total} units')
+        events.push({'type': 'pipeline', 'stage': 'dispatched', 'tag_uid': tag_uid,
+                     'item_id': pallet_id, 'item_name': f'Pallet {pallet_id}',
+                     'tag_level': 'pallet', 'unit_count': grand_total})
+    else:
+        print(f'[MQTT] pallet_gate: {pallet_id} state={state}, skip')
+        conn.close()
+
+
 # ── Pipeline handlers ─────────────────────────────────────────────────────────
 
 def _handle_factory_written(client, payload):
     tag_uid  = payload.get('tag_uid')
-    item_id  = payload.get('item_id')
+    item_id  = payload.get('item_id') or ''
     batch_id = payload.get('batch_id', '')
     if not tag_uid or not item_id:
         return
+
+    # Route carton / pallet tag writes to dedicated handlers
+    if _is_carton(item_id):
+        conn = get_db(); c = conn.cursor()
+        _carton_factory_written(c, conn, payload); return
+    if _is_pallet(item_id):
+        conn = get_db(); c = conn.cursor()
+        _pallet_factory_written(c, conn, payload); return
 
     conn = get_db()
     c = conn.cursor()
@@ -327,7 +723,7 @@ def _handle_factory_written(client, payload):
                VALUES (?, 'tag_write', 0, ?, ?, ?, ?, ?)''',
               (item_id, item['quantity'], item['quantity'], tag_uid, f'batch:{batch_id}',
                payload.get('device_id', 'unknown')))
-    _attach_worker(c, c.lastrowid, payload.get('device_id'))
+    _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
     if batch_id:
         c.execute('UPDATE write_jobs SET written = written + 1 WHERE batch_id = ?', (batch_id,))
         c.execute('''UPDATE write_jobs
@@ -343,8 +739,17 @@ def _handle_factory_written(client, payload):
 
 def _handle_factory_exit(client, payload):
     tag_uid = payload.get('tag_uid')
+    item_id = payload.get('item_id') or ''
     if not tag_uid:
         return
+
+    # Carton / pallet exit
+    if _is_carton(item_id):
+        conn = get_db(); c = conn.cursor()
+        _carton_factory_exit(c, conn, payload); return
+    if _is_pallet(item_id):
+        conn = get_db(); c = conn.cursor()
+        _carton_factory_exit(c, conn, payload); return  # pallets treated as cartons at exit
 
     conn = get_db()
     c = conn.cursor()
@@ -361,7 +766,7 @@ def _handle_factory_exit(client, payload):
                        VALUES (?, 'factory_exit', 0, ?, ?, ?, ?)''',
                       (item_id, item['quantity'], item['quantity'], tag_uid,
                        payload.get('device_id', 'unknown')))
-            _attach_worker(c, c.lastrowid, payload.get('device_id'))
+            _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
             conn.commit()
             conn.close()
             events.push({'type': 'pipeline', 'stage': 'in_transit',
@@ -379,7 +784,7 @@ def _handle_factory_exit(client, payload):
                    VALUES (?, 'factory_exit', 0, ?, ?, ?, ?)''',
                   (tag['item_id'], tag['quantity'], tag['quantity'], tag_uid,
                    payload.get('device_id', 'unknown')))
-        _attach_worker(c, c.lastrowid, payload.get('device_id'))
+        _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
         conn.commit()
         conn.close()
         print(f'[MQTT] IN_TRANSIT {tag_uid} -> {tag["item_name"]}')
@@ -396,13 +801,22 @@ def _handle_factory_exit(client, payload):
 def _handle_warehouse_gate(client, payload):
     """
     Smart gate — state determines action:
-      in_transit / out            -> receive  (qty +1)
-      received / racked / returned / in -> dispatch (qty -1, TERMINAL)
+      in_transit / out            -> receive  (qty +N, N=1 for units, N=unit_count for cartons/pallets)
+      received / racked / returned / in -> dispatch (qty -N, TERMINAL)
       dispatched / consumed       -> SECURITY ALERT
     """
     tag_uid = payload.get('tag_uid')
+    item_id = payload.get('item_id') or ''
     if not tag_uid:
         return
+
+    # Route carton / pallet to dedicated bulk handlers
+    if _is_carton(item_id):
+        conn = get_db(); c = conn.cursor()
+        _carton_warehouse_gate(c, conn, client, payload); return
+    if _is_pallet(item_id):
+        conn = get_db(); c = conn.cursor()
+        _pallet_warehouse_gate(c, conn, client, payload); return
 
     conn = get_db()
     c = conn.cursor()
@@ -424,7 +838,7 @@ def _handle_warehouse_gate(client, payload):
                        (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
                        VALUES (?, 'warehouse_receive', 1, ?, ?, ?, ?)''',
                       (item_id, prev, new_qty, tag_uid, payload.get('device_id', 'unknown')))
-            _attach_worker(c, c.lastrowid, payload.get('device_id'))
+            _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
             conn.commit()
             conn.close()
             events.push({'type': 'pipeline', 'stage': 'received',
@@ -450,7 +864,7 @@ def _handle_warehouse_gate(client, payload):
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
                    VALUES (?, 'warehouse_receive', 1, ?, ?, ?, ?)''',
                   (item_id, prev, new_qty, tag_uid, payload.get('device_id', 'unknown')))
-        _attach_worker(c, c.lastrowid, payload.get('device_id'))
+        _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
         # Check against any open purchase orders
         _check_purchase_order(c, item_id)
         conn.commit()
@@ -506,9 +920,15 @@ def _handle_warehouse_rack(client, payload):
     """received / returned -> racked, records shelf location.
     Invalid states are logged and rejected — no silent corruption."""
     tag_uid       = payload.get('tag_uid')
+    item_id       = payload.get('item_id') or ''
     rack_location = payload.get('rack_location', 'unknown')
     if not tag_uid:
         return
+
+    # Carton racking
+    if _is_carton(item_id):
+        conn = get_db(); c = conn.cursor()
+        _carton_warehouse_rack(c, conn, payload); return
 
     conn = get_db()
     c = conn.cursor()
@@ -528,7 +948,7 @@ def _handle_warehouse_rack(client, payload):
                    VALUES (?, 'warehouse_rack', 0, ?, ?, ?, ?, ?)''',
                   (tag['item_id'], tag['quantity'], tag['quantity'],
                    tag_uid, f'rack:{rack_location}', payload.get('device_id', 'unknown')))
-        _attach_worker(c, c.lastrowid, payload.get('device_id'))
+        _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
         conn.commit()
         conn.close()
         print(f'[MQTT] RACKED     {tag_uid} -> {tag["item_name"]}  @ {rack_location}')
@@ -580,7 +1000,7 @@ def _handle_return_gate(client, payload):
                    VALUES (?, ?, 1, ?, ?, ?, ?, ?)''',
                   (tag['item_id'], action, prev, new_qty, tag_uid, note,
                    payload.get('device_id', 'unknown')))
-        _attach_worker(c, c.lastrowid, payload.get('device_id'))
+        _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
         conn.commit()
         conn.close()
         print(f'[MQTT] RETURNED   {tag_uid} -> {tag["item_name"]}  qty ->{new_qty}')
@@ -654,7 +1074,7 @@ def _handle_legacy_scan(client, payload):
                    VALUES (?, 'return_confirmed', 1, ?, ?, ?, ?, ?)''',
                   (item_id, prev_qty, new_qty, tag_uid, 'Return confirmed — item back in stock',
                    payload.get('device_id', 'unknown')))
-        _attach_worker(c, c.lastrowid, payload.get('device_id'))
+        _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
         conn.commit()
         conn.close()
         events.push({'type': 'scan', 'item_id': item_id, 'item_name': item['name'],
@@ -681,7 +1101,7 @@ def _handle_legacy_scan(client, payload):
                VALUES (?, ?, ?, ?, ?, ?, ?)''',
               (item_id, action, change, prev_qty, new_qty, tag_uid,
                payload.get('device_id', 'unknown')))
-    _attach_worker(c, c.lastrowid, payload.get('device_id'))
+    _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
     if action == 'scan_out' and new_qty <= item['low_stock_threshold']:
         alert_type = 'out_of_stock' if new_qty == 0 else 'low_stock'
         alert_msg  = (f"{item['name']} is {'out of stock' if new_qty == 0 else 'low on stock'}: "

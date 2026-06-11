@@ -32,6 +32,8 @@ let _analytics    = [];
 let _transactions = [];
 let _alerts       = [];
 let _audit        = [];
+let _cartons      = [];
+let _pallets      = [];
 let _alertFilter  = 'all';
 let _auditFilter  = 'all';
 
@@ -70,7 +72,7 @@ let _auditFilter  = 'all';
     } else if (savedTab === 'workers') {
       fetchWorkers(); fetchUsers(); fetchWebhooks();
     } else if (savedTab === 'manufacturing') {
-      fetchPipeline(); fetchPurchaseOrders('');
+      fetchPipeline(); fetchPurchaseOrders(''); fetchCartons(); fetchPallets();
     } else if (savedTab === 'audit') {
       fetchAudit();
     }
@@ -337,7 +339,7 @@ function setupTabs() {
       if (tab === 'tags')          fetchTags();
       if (tab === 'alerts')        fetchAlerts();
       if (tab === 'workers')       { fetchWorkers(); fetchUsers(); fetchWebhooks(); }
-      if (tab === 'manufacturing') { fetchPipeline(); fetchPurchaseOrders(''); }
+      if (tab === 'manufacturing') { fetchPipeline(); fetchPurchaseOrders(''); fetchCartons(); fetchPallets(); }
       if (tab === 'audit')         fetchAudit();
     });
   });
@@ -1087,6 +1089,10 @@ function applyRBAC(role) {
   if (poCard) poCard.style.display = isManager ? '' : 'none';
   const importBtn = document.getElementById('btn-import-csv');
   if (importBtn) importBtn.style.display = isManager ? '' : 'none';
+  const btnCreateCarton = document.getElementById('btn-create-carton');
+  if (btnCreateCarton) btnCreateCarton.style.display = isManager ? '' : 'none';
+  const btnCreatePallet = document.getElementById('btn-create-pallet');
+  if (btnCreatePallet) btnCreatePallet.style.display = isManager ? '' : 'none';
   const addPoBtn = document.getElementById('btn-add-po');
   if (addPoBtn) addPoBtn.style.display = isManager ? '' : 'none';
 }
@@ -1977,6 +1983,280 @@ document.addEventListener('DOMContentLoaded', () => {
     } finally { _btnLoad(btn, false, id ? 'Save Changes' : 'Add Webhook'); }
   });
 });
+
+// ── Carton Management ─────────────────────────────────────────────────────────
+
+const _CARTON_STATE_BADGE = {
+  created:    'badge-neutral',
+  in_transit: 'badge-warning',
+  received:   'badge-info',
+  racked:     'badge-success',
+  dispatched: 'badge-neutral',
+};
+
+async function fetchCartons() {
+  const tbody = document.getElementById('carton-tbody');
+  if (tbody) tbody.innerHTML = _skeletonRows(7, 3);
+  try {
+    const cartons = await fetch('/api/cartons').then(r => r.json());
+    _cartons = cartons;
+    renderCartons(cartons);
+  } catch {
+    const tbody = document.getElementById('carton-tbody');
+    if (tbody) tbody.innerHTML = _tableError(7);
+  }
+}
+
+function renderCartons(cartons) {
+  const tbody = document.getElementById('carton-tbody');
+  if (!tbody) return;
+  const isManager = currentRole === 'admin' || currentRole === 'manager';
+  if (!cartons.length) {
+    tbody.innerHTML = _tableEmpty(7, 'box', 'No cartons yet',
+      'Create cartons to group unit-level items for bulk pipeline scanning. One CTN tag scan = N units received at the warehouse.',
+      isManager ? `<button onclick="openCreateCartonModal()" class="btn-primary text-sm">+ Create first carton</button>` : '');
+    return;
+  }
+  tbody.innerHTML = cartons.map(c => {
+    const stateCls = _CARTON_STATE_BADGE[c.state] || 'badge-neutral';
+    const tagCell  = c.tag_uid
+      ? `<span class="font-mono text-xs text-slate-600">${esc(c.tag_uid)}</span>`
+      : '<span class="text-slate-300 text-xs italic">not yet tagged</span>';
+    const actions = isManager
+      ? `<div class="action-cell"><button onclick="deleteCarton('${esc(c.id)}')" class="btn-sm btn-sm-danger">Delete</button></div>`
+      : '<span class="text-gray-300 text-xs">—</span>';
+    return `
+      <tr data-carton-id="${esc(c.id)}">
+        <td class="px-4 py-3 font-mono text-sm font-semibold text-purple-700">${esc(c.id)}</td>
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-800">${esc(c.item_name || c.item_id)}</div>
+          <div class="text-xs text-gray-400">${esc(c.item_id)}</div>
+        </td>
+        <td class="px-4 py-3 text-right font-mono font-semibold text-gray-700">${c.unit_count}</td>
+        <td class="px-4 py-3 text-center">${tagCell}</td>
+        <td class="px-4 py-3 text-center"><span class="badge ${stateCls}">${esc((c.state || '').replace(/_/g,' '))}</span></td>
+        <td class="px-4 py-3 text-xs text-gray-500 max-w-xs truncate">${esc(c.note) || '<span class="text-gray-300">—</span>'}</td>
+        <td class="px-4 py-3 text-center">${actions}</td>
+      </tr>`;
+  }).join('');
+}
+
+function openCreateCartonModal() {
+  const sel = document.getElementById('carton-item-id');
+  if (sel) {
+    sel.innerHTML = '<option value="">— select item —</option>' +
+      _items.map(i => `<option value="${esc(i.id)}">${esc(i.name)} (${esc(i.id)})</option>`).join('');
+  }
+  const form = document.getElementById('form-create-carton');
+  if (form) form.reset();
+  const errEl = document.getElementById('carton-form-error');
+  if (errEl) errEl.classList.add('hidden');
+  openModal('modal-create-carton');
+}
+
+async function deleteCarton(id) {
+  const ok = await customConfirm('Delete Carton', `Delete carton ${id}? This cannot be undone.`, true);
+  if (!ok) return;
+  const r = await fetch(`/api/cartons/${encodeURIComponent(id)}`, { method:'DELETE' });
+  if (r.ok) { showToast('Carton deleted', 'info'); fetchCartons(); fetchPallets(); }
+  else { const d = await r.json().catch(() => ({})); showToast(d.error || 'Failed to delete carton', 'error'); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-create-carton');
+  if (!form) return;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn     = form.querySelector('button[type=submit]');
+    const errEl   = document.getElementById('carton-form-error');
+    const item_id    = document.getElementById('carton-item-id').value;
+    const unit_count = parseInt(document.getElementById('carton-unit-count').value);
+    const note       = (document.getElementById('carton-note')?.value || '').trim() || null;
+    if (!item_id)            return showToast('Select an item', 'warning');
+    if (unit_count < 1)      return showToast('Units per carton must be at least 1', 'warning');
+    if (errEl) errEl.classList.add('hidden');
+    _btnLoad(btn, true, 'Creating…');
+    try {
+      const r = await fetch('/api/cartons', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ item_id, unit_count, note }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        closeModal('modal-create-carton');
+        fetchCartons();
+        showToast(`Carton ${d.carton_id} created (${unit_count} units of ${item_id})`, 'success');
+      } else {
+        if (errEl) { errEl.textContent = d.error || 'Failed to create carton'; errEl.classList.remove('hidden'); }
+        else showToast(d.error || 'Failed to create carton', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Create Carton'); }
+  });
+});
+
+// ── Pallet Management ─────────────────────────────────────────────────────────
+
+const _PALLET_STATE_BADGE = {
+  loading:    'badge-neutral',
+  sealed:     'badge-info',
+  in_transit: 'badge-warning',
+  received:   'badge-success',
+  dispatched: 'badge-neutral',
+};
+
+async function fetchPallets() {
+  const el = document.getElementById('pallet-list');
+  if (el) el.innerHTML = `<div class="section-loading"><span class="spinner spinner-dark"></span> Loading pallets…</div>`;
+  try {
+    const pallets = await fetch('/api/pallets').then(r => r.json());
+    _pallets = pallets;
+    renderPallets(pallets);
+  } catch {
+    const el = document.getElementById('pallet-list');
+    if (el) el.innerHTML = `<div class="error-state"><div class="error-icon">⚠</div><div class="error-title">Load error</div></div>`;
+  }
+}
+
+function renderPallets(pallets) {
+  const el = document.getElementById('pallet-list');
+  if (!el) return;
+  const isManager = currentRole === 'admin' || currentRole === 'manager';
+  if (!pallets.length) {
+    el.innerHTML = _emptyState('box', 'No pallets yet',
+      'Create a pallet to group multiple cartons for bulk gate scanning. One PLT tag scan moves the entire load.',
+      isManager ? `<button onclick="openCreatePalletModal()" class="btn-primary text-sm">+ Create first pallet</button>` : '');
+    return;
+  }
+  el.innerHTML = pallets.map(p => {
+    const stateCls   = _PALLET_STATE_BADGE[p.state] || 'badge-neutral';
+    const tagDisplay = p.tag_uid
+      ? `<span class="font-mono text-xs text-slate-600">${esc(p.tag_uid)}</span>`
+      : '<span class="text-slate-400 text-xs italic">no tag yet</span>';
+    const cartonRows = (p.cartons || []).map(c => `
+      <div class="flex items-center justify-between py-1.5 border-b border-slate-100 last:border-0 text-sm gap-3">
+        <span class="font-mono text-purple-700 font-semibold shrink-0">${esc(c.id)}</span>
+        <span class="text-gray-700 flex-1 truncate">${esc(c.item_name || c.item_id)}</span>
+        <span class="text-gray-500 shrink-0">${c.unit_count} units</span>
+        ${isManager
+          ? `<button onclick="removeCartonFromPallet('${esc(p.id)}','${esc(c.id)}')"
+               class="btn-sm btn-sm-danger shrink-0">Remove</button>` : ''}
+      </div>`).join('');
+    const emptyCartons = `<div class="text-slate-400 text-sm py-2 text-center">No cartons added yet — click "Add Carton"</div>`;
+    return `
+      <div class="border border-slate-200 rounded-xl overflow-hidden" data-pallet-id="${esc(p.id)}">
+        <div class="flex items-center justify-between bg-slate-50 px-4 py-3 gap-3 flex-wrap">
+          <div class="flex items-center gap-3">
+            <span class="font-mono text-base font-bold text-purple-700">${esc(p.id)}</span>
+            <span class="badge ${stateCls}">${esc((p.state||'').replace(/_/g,' '))}</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm text-slate-500">
+            <span class="font-semibold text-slate-700">${p.cartons ? p.cartons.length : 0} carton${(p.cartons||[]).length !== 1 ? 's' : ''}</span>
+            <span>·</span>
+            <span class="font-semibold text-slate-700">${p.total_units || 0} units total</span>
+            <span>·</span>
+            ${tagDisplay}
+          </div>
+          <div class="flex items-center gap-2">
+            ${isManager
+              ? `<button onclick="openAddCartonToPalletModal('${esc(p.id)}')" class="btn-sm btn-sm-edit">Add Carton</button>
+                 <button onclick="deletePallet('${esc(p.id)}')" class="btn-sm btn-sm-danger">Delete</button>`
+              : ''}
+          </div>
+        </div>
+        ${p.note ? `<div class="px-4 py-2 text-xs text-slate-500 border-b border-slate-100">${esc(p.note)}</div>` : ''}
+        <div class="px-4 py-2">
+          ${(p.cartons||[]).length ? cartonRows : emptyCartons}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function openCreatePalletModal() {
+  const form = document.getElementById('form-create-pallet');
+  if (form) form.reset();
+  const errEl = document.getElementById('pallet-form-error');
+  if (errEl) errEl.classList.add('hidden');
+  openModal('modal-create-pallet');
+}
+
+async function deletePallet(id) {
+  const ok = await customConfirm('Delete Pallet', `Delete pallet ${id} and remove all its carton associations?`, true);
+  if (!ok) return;
+  const r = await fetch(`/api/pallets/${encodeURIComponent(id)}`, { method:'DELETE' });
+  if (r.ok) { showToast('Pallet deleted', 'info'); fetchPallets(); }
+  else { const d = await r.json().catch(() => ({})); showToast(d.error || 'Failed to delete pallet', 'error'); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('form-create-pallet');
+  if (!form) return;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn   = form.querySelector('button[type=submit]');
+    const errEl = document.getElementById('pallet-form-error');
+    const note  = (document.getElementById('pallet-note')?.value || '').trim() || null;
+    if (errEl) errEl.classList.add('hidden');
+    _btnLoad(btn, true, 'Creating…');
+    try {
+      const r = await fetch('/api/pallets', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ note }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        closeModal('modal-create-pallet');
+        fetchPallets();
+        showToast(`Pallet ${d.pallet_id} created`, 'success');
+      } else {
+        if (errEl) { errEl.textContent = d.error || 'Failed to create pallet'; errEl.classList.remove('hidden'); }
+        else showToast(d.error || 'Failed to create pallet', 'error');
+      }
+    } finally { _btnLoad(btn, false, 'Create Pallet'); }
+  });
+});
+
+function openAddCartonToPalletModal(palletId) {
+  document.getElementById('acp-pallet-id').value = palletId;
+  const pallet = _pallets.find(p => p.id === palletId);
+  const existingIds = new Set((pallet?.cartons || []).map(c => c.id));
+  const available   = _cartons.filter(c => !existingIds.has(c.id) && c.state !== 'dispatched');
+  const sel = document.getElementById('acp-carton-id');
+  if (sel) {
+    if (!available.length) {
+      sel.innerHTML = '<option value="">No available cartons</option>';
+    } else {
+      sel.innerHTML = '<option value="">— select carton —</option>' +
+        available.map(c => `<option value="${esc(c.id)}">${esc(c.id)} — ${esc(c.item_name || c.item_id)} (${c.unit_count} units)</option>`).join('');
+    }
+  }
+  openModal('modal-add-carton-to-pallet');
+}
+
+async function submitAddCartonToPallet() {
+  const palletId  = document.getElementById('acp-pallet-id').value;
+  const cartonId  = document.getElementById('acp-carton-id').value;
+  if (!cartonId) return showToast('Select a carton', 'warning');
+  const r = await fetch(`/api/pallets/${encodeURIComponent(palletId)}/cartons`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ carton_id: cartonId }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) {
+    closeModal('modal-add-carton-to-pallet');
+    fetchPallets();
+    showToast(`Carton ${cartonId} added to ${palletId}`, 'success');
+  } else {
+    showToast(d.error || 'Failed to add carton to pallet', 'error');
+  }
+}
+
+async function removeCartonFromPallet(palletId, cartonId) {
+  const ok = await customConfirm('Remove Carton', `Remove ${cartonId} from pallet ${palletId}?`, false);
+  if (!ok) return;
+  const r = await fetch(`/api/pallets/${encodeURIComponent(palletId)}/cartons/${encodeURIComponent(cartonId)}`, { method:'DELETE' });
+  if (r.ok) { showToast(`${cartonId} removed from ${palletId}`, 'info'); fetchPallets(); }
+  else { const d = await r.json().catch(() => ({})); showToast(d.error || 'Failed to remove carton', 'error'); }
+}
 
 // ── Init overview charts ──────────────────────────────────────────────────────
 fetchTransactionTrends();

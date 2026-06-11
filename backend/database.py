@@ -132,6 +132,41 @@ def init_db():
             created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (item_id) REFERENCES items(id)
         );
+
+        -- ── Tag hierarchy: cartons and pallets ──────────────────────────────
+        --  A carton groups N unit-level items of one SKU under one RFID tag.
+        --  A pallet groups M cartons under one RFID tag.
+        --  One pallet scan at the warehouse gate moves the entire load.
+
+        CREATE TABLE IF NOT EXISTS cartons (
+            id          TEXT PRIMARY KEY,         -- e.g. CTN-0001
+            item_id     TEXT NOT NULL,             -- which SKU is inside
+            unit_count  INTEGER NOT NULL DEFAULT 1,-- how many units this carton holds
+            tag_uid     TEXT UNIQUE,               -- RFID tag UID once written
+            state       TEXT DEFAULT 'created',   -- created|in_transit|received|racked|dispatched
+            note        TEXT,
+            created_by  TEXT DEFAULT 'system',
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (item_id) REFERENCES items(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS pallets (
+            id         TEXT PRIMARY KEY,           -- e.g. PLT-0001
+            tag_uid    TEXT UNIQUE,
+            state      TEXT DEFAULT 'loading',     -- loading|sealed|in_transit|received|dispatched
+            note       TEXT,
+            created_by TEXT DEFAULT 'system',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS pallet_cartons (
+            pallet_id  TEXT NOT NULL,
+            carton_id  TEXT NOT NULL,
+            added_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (pallet_id, carton_id),
+            FOREIGN KEY (pallet_id) REFERENCES pallets(id),
+            FOREIGN KEY (carton_id) REFERENCES cartons(id)
+        );
     ''')
 
     # ── Schema migrations (tracked via schema_version to avoid re-runs) ──────
@@ -146,6 +181,12 @@ def init_db():
         (8,  "ALTER TABLE workers ADD COLUMN zone TEXT DEFAULT 'general'"),
         (9,  "ALTER TABLE items ADD COLUMN reserved_qty INTEGER DEFAULT 0"),
         (10, "ALTER TABLE rfid_tags ADD COLUMN previous_uid TEXT"),
+        # Tag hierarchy columns
+        (11, "ALTER TABLE rfid_tags ADD COLUMN tag_level TEXT DEFAULT 'unit'"),
+        (12, "ALTER TABLE rfid_tags ADD COLUMN parent_uid TEXT"),
+        (13, "ALTER TABLE rfid_tags ADD COLUMN unit_count INTEGER DEFAULT 1"),
+        # Direct worker attribution on transactions (complements performed_by string)
+        (14, "ALTER TABLE transactions ADD COLUMN worker_id TEXT"),
     ]
     for version, sql in _MIGRATIONS:
         c.execute('SELECT 1 FROM schema_version WHERE version = ?', (version,))

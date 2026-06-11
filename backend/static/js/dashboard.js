@@ -45,11 +45,22 @@ let _auditFilter  = 'all';
     if (!r.ok) { window.location.href = '/login'; return; }
     const me = await r.json();
     currentRole = me.role;
-    document.getElementById('user-info').textContent = `${me.username} (${me.role})`;
+    const initials = me.username.slice(0, 2).toUpperCase();
+    // Topbar compact
     const tbUser = document.getElementById('topbar-username');
     const tbPill = document.getElementById('topbar-role-pill');
     if (tbUser) tbUser.textContent = me.username;
     if (tbPill) { tbPill.textContent = me.role; tbPill.className = `topbar-role role-${me.role}`; }
+    // Avatar initials (small + large)
+    const av  = document.getElementById('profile-avatar');
+    const avL = document.getElementById('profile-avatar-lg');
+    if (av)  av.textContent  = initials;
+    if (avL) avL.textContent = initials;
+    // Dropdown header
+    const pName = document.getElementById('profile-name-lg');
+    const pRole = document.getElementById('profile-role-lg');
+    if (pName) pName.textContent = me.username;
+    if (pRole) { pRole.textContent = me.role; pRole.className = `topbar-role role-${me.role}`; }
   } catch {
     window.location.href = '/login';
     return;
@@ -93,6 +104,19 @@ let _auditFilter  = 'all';
   setInterval(fetchTransactions, 15000);
   setInterval(fetchAlerts, 20000);
 })();
+
+// ── Profile dropdown ──────────────────────────────────────────────────────────
+function toggleProfileMenu() {
+  const dd = document.getElementById('profile-dropdown');
+  if (!dd) return;
+  dd.classList.toggle('hidden');
+}
+
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('profile-menu-wrap');
+  const dd   = document.getElementById('profile-dropdown');
+  if (wrap && dd && !wrap.contains(e.target)) dd.classList.add('hidden');
+});
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 function initTheme() {
@@ -1770,6 +1794,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const d = await r.json().catch(() => ({}));
       if (r.ok) {
         form.reset();
+        document.getElementById('profile-dropdown')?.classList.add('hidden');
         showToast('Password changed successfully', 'success');
       } else {
         showToast(d.error || 'Failed to change password', 'error');

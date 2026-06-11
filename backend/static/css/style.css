@@ -827,6 +827,17 @@ body { background: #F5F3FF; }
 [data-theme="dark"] #clock { color: #6B5E9B !important; }
 [data-theme="dark"] #topbar-username { color: #9880D0 !important; }
 [data-theme="dark"] #theme-toggle:hover { background: #231840 !important; }
+[data-theme="dark"] #profile-btn:hover { background: #231840 !important; }
+[data-theme="dark"] #profile-dropdown {
+  background: #19122E !important;
+  border-color: #2A1D45 !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5) !important;
+}
+[data-theme="dark"] #profile-dropdown .border-b { border-color: #2A1D45 !important; }
+[data-theme="dark"] #profile-dropdown [style*="background:#faf5ff"] { background: #14102A !important; }
+[data-theme="dark"] #profile-dropdown .text-slate-800 { color: #EDE9FE !important; }
+[data-theme="dark"] #profile-dropdown .text-slate-400 { color: #5E5184 !important; }
+[data-theme="dark"] #profile-dropdown button:hover { background: #231840 !important; }
 
 /* Cards */
 [data-theme="dark"] .card {

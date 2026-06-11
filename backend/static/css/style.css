@@ -241,6 +241,30 @@ body {
 .badge-purple  { background: #ede9fe; color: #5b21b6; }
 .badge-orange  { background: #ffedd5; color: #9a3412; }
 
+/* ── MQTT status indicator ───────────────────────────────────────────────── */
+
+@keyframes mqtt-breathe-live {
+  0%, 100% { box-shadow: 0 0 3px #4ade80, 0 0 8px rgba(74,222,128,0.6); opacity: 1; }
+  50%       { box-shadow: 0 0 2px #4ade80, 0 0 4px rgba(74,222,128,0.3); opacity: 0.65; }
+}
+@keyframes mqtt-breathe-offline {
+  0%, 100% { box-shadow: 0 0 3px #f87171, 0 0 8px rgba(248,113,113,0.5); opacity: 1; }
+  50%       { box-shadow: 0 0 2px #f87171, 0 0 4px rgba(248,113,113,0.25); opacity: 0.55; }
+}
+
+.mqtt-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.mqtt-dot-live    { background: #4ade80; animation: mqtt-breathe-live    2.4s ease-in-out infinite; }
+.mqtt-dot-offline { background: #f87171; animation: mqtt-breathe-offline 2s   ease-in-out infinite; }
+
+.mqtt-label         { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em; }
+.mqtt-label-live    { color: #4ade80; text-shadow: 0 0 6px rgba(74,222,128,0.7); }
+.mqtt-label-offline { color: #f87171; text-shadow: 0 0 6px rgba(248,113,113,0.5); }
+
 /* ── Live scan neon badge ────────────────────────────────────────────────── */
 
 @keyframes neon-breathe {

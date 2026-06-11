@@ -376,15 +376,13 @@ async function fetchStatus() {
     const dot   = document.getElementById('mqtt-dot');
     const label = document.getElementById('mqtt-label');
     if (d.connected) {
-      dot.className = 'w-1.5 h-1.5 rounded-full shrink-0';
-      dot.style.background = '#3fb950';
+      dot.className   = 'mqtt-dot mqtt-dot-live';
+      label.className = 'mqtt-label mqtt-label-live';
       label.textContent = 'MQTT Live';
-      label.style.color = '#3fb950';
     } else {
-      dot.className = 'w-1.5 h-1.5 rounded-full shrink-0';
-      dot.style.background = '#f85149';
+      dot.className   = 'mqtt-dot mqtt-dot-offline';
+      label.className = 'mqtt-label mqtt-label-offline';
       label.textContent = 'MQTT Offline';
-      label.style.color = '#f85149';
     }
   } catch {}
 }

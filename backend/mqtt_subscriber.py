@@ -1015,9 +1015,6 @@ def _handle_warehouse_rack(client, payload):
                  'tag_uid': tag_uid, 'item_id': tag['item_id'],
                  'item_name': tag['item_name'], 'rack_location': rack_location,
                  'worker_id': worker_id})
-        events.push({'type': 'security_alert', 'tag_uid': tag_uid,
-                     'item_id': tag['item_id'], 'item_name': tag['item_name'],
-                     'message': f'Rack attempt on {state} tag — possible mis-scan'})
 
 
 def _handle_return_gate(client, payload):

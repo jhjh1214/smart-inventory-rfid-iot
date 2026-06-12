@@ -918,103 +918,72 @@ def _handle_warehouse_gate(client, payload):
 
 def _handle_warehouse_rack(client, payload):
     """
-    Rack reader state machine — worker must authenticate first (badge tap).
-    Place on shelf:  received / returned / in_transit / tagged  → racked
-    Pick from shelf: racked  → picked (ready for dispatch via warehouse gate)
-    Alert:           dispatched / consumed tag scanned at rack  → security alert
-    Unknown tag:     auto-registered directly as racked
+    Simple toggle: scan = add to rack (+1 qty), scan again = remove from rack (-1 qty).
+    No worker auth required.
     """
     tag_uid       = payload.get('tag_uid')
     item_id       = payload.get('item_id') or ''
     rack_location = payload.get('rack_location', 'unknown')
-    worker_id     = payload.get('worker_id')
     device_id     = payload.get('device_id', 'unknown')
-    if not tag_uid:
+    if not tag_uid or not item_id:
         return
-
-    # Carton racking
-    if _is_carton(item_id):
-        conn = get_db(); c = conn.cursor()
-        _carton_warehouse_rack(c, conn, payload); return
 
     conn = get_db()
     c = conn.cursor()
     tag = _get_tag_with_item(c, tag_uid)
 
-    # ── Unknown tag — auto-register directly as racked ────────────────────────
+    # ── Tag is currently on the rack → remove it (-1 qty) ────────────────────
+    if tag and tag['state'] == 'racked':
+        item_id   = tag['item_id']
+        item_name = tag['item_name']
+        c.execute('''UPDATE items SET quantity = MAX(0, quantity - 1),
+                     updated_at = CURRENT_TIMESTAMP WHERE id = ?''', (item_id,))
+        c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
+        new_qty = c.fetchone()['quantity']
+        prev    = new_qty + 1
+        c.execute('''UPDATE rfid_tags SET state = 'received', rack_location = NULL,
+                     last_scan = CURRENT_TIMESTAMP WHERE uid = ?''', (tag_uid,))
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
+                   VALUES (?, 'rack_remove', -1, ?, ?, ?, ?, ?)''',
+                  (item_id, prev, new_qty, tag_uid, f'removed from rack:{rack_location}', device_id))
+        _low_stock_check(c, client, item_id, item_name, new_qty, tag['low_stock_threshold'], tag['unit'])
+        conn.commit()
+        conn.close()
+        print(f'[MQTT] RACK-1     {tag_uid} -> {item_name}  qty {prev}->{new_qty}')
+        events.push({'type': 'pipeline', 'stage': 'rack_remove',
+                     'tag_uid': tag_uid, 'item_id': item_id,
+                     'item_name': item_name, 'quantity': new_qty})
+        return
+
+    # ── Tag not on rack → place it on rack (+1 qty) ───────────────────────────
     if not tag:
-        if not item_id:
-            print(f'[MQTT] warehouse_rack: BLANK TAG {tag_uid} — no item_id, ignoring')
-            conn.close()
-            return
         item = _ensure_item(c, item_id)
         c.execute('INSERT INTO rfid_tags (uid, item_id, state, rack_location) VALUES (?, ?, ?, ?)',
                   (tag_uid, item_id, 'racked', rack_location))
-        c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
-                   VALUES (?, 'warehouse_rack', 0, ?, ?, ?, ?, ?)''',
-                  (item_id, item['quantity'], item['quantity'], tag_uid,
-                   f'rack:{rack_location} worker:{worker_id or "unknown"} (new tag)',
-                   device_id))
-        _attach_worker(c, c.lastrowid, device_id, worker_id)
-        conn.commit()
-        conn.close()
-        print(f'[MQTT] RACKED(new) {tag_uid} -> {item["name"]}  @ {rack_location}  worker={worker_id}')
-        events.push({'type': 'pipeline', 'stage': 'racked',
-                     'tag_uid': tag_uid, 'item_id': item_id,
-                     'item_name': item['name'], 'rack_location': rack_location,
-                     'worker_id': worker_id})
-        return
+        item_name = item['name']
+        prev_qty  = item['quantity']
+    else:
+        item_id   = tag['item_id']
+        item_name = tag['item_name']
+        prev_qty  = tag['quantity']
+        c.execute('''UPDATE rfid_tags SET state = 'racked', rack_location = ?,
+                     last_scan = CURRENT_TIMESTAMP WHERE uid = ?''', (rack_location, tag_uid))
 
-    state = tag['state']
-
-    # ── Item already racked — worker is picking it up for dispatch ────────────
-    if state == 'racked':
-        c.execute('''UPDATE rfid_tags
-                   SET state = 'received', rack_location = NULL, last_scan = CURRENT_TIMESTAMP
-                   WHERE uid = ?''', (tag_uid,))
-        c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
-                   VALUES (?, 'rack_pick', 0, ?, ?, ?, ?, ?)''',
-                  (tag['item_id'], tag['quantity'], tag['quantity'], tag_uid,
-                   f'picked from rack:{rack_location} worker:{worker_id or "unknown"}',
-                   device_id))
-        _attach_worker(c, c.lastrowid, device_id, worker_id)
-        conn.commit()
-        conn.close()
-        print(f'[MQTT] RACK_PICK  {tag_uid} -> {tag["item_name"]}  from {rack_location}  worker={worker_id}')
-        events.push({'type': 'pipeline', 'stage': 'rack_pick',
-                     'tag_uid': tag_uid, 'item_id': tag['item_id'],
-                     'item_name': tag['item_name'], 'rack_location': rack_location,
-                     'worker_id': worker_id})
-        return
-
-    # ── Terminal state scanned at rack — security alert ───────────────────────
-    if state in ('dispatched', 'consumed'):
-        _security_alert(c, conn, client, tag['item_id'], tag['item_name'], tag_uid,
-                        f'RACK ALERT: {state} tag {tag_uid} ({tag["item_name"]}) '
-                        f'scanned at rack {rack_location} — possible mis-scan or fraud')
-        return
-
-    # ── Place on shelf: any other active state → racked ───────────────────────
-    prev_state = state
-    c.execute('''UPDATE rfid_tags
-               SET state = 'racked', rack_location = ?, last_scan = CURRENT_TIMESTAMP
-               WHERE uid = ?''', (rack_location, tag_uid))
+    c.execute('''UPDATE items SET quantity = quantity + 1,
+                 updated_at = CURRENT_TIMESTAMP WHERE id = ?''', (item_id,))
+    c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
+    new_qty = c.fetchone()['quantity']
     c.execute('''INSERT INTO transactions
                (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
-               VALUES (?, 'warehouse_rack', 0, ?, ?, ?, ?, ?)''',
-              (tag['item_id'], tag['quantity'], tag['quantity'], tag_uid,
-               f'rack:{rack_location} worker:{worker_id or "unknown"} (was:{prev_state})',
-               device_id))
-    _attach_worker(c, c.lastrowid, device_id, worker_id)
+               VALUES (?, 'rack_add', 1, ?, ?, ?, ?, ?)''',
+              (item_id, prev_qty, new_qty, tag_uid, f'added to rack:{rack_location}', device_id))
     conn.commit()
     conn.close()
-    print(f'[MQTT] RACKED     {tag_uid} -> {tag["item_name"]}  @ {rack_location}  worker={worker_id}  (was:{prev_state})')
-    events.push({'type': 'pipeline', 'stage': 'racked',
-                 'tag_uid': tag_uid, 'item_id': tag['item_id'],
-                 'item_name': tag['item_name'], 'rack_location': rack_location,
-                 'worker_id': worker_id})
+    print(f'[MQTT] RACK+1     {tag_uid} -> {item_name}  qty {prev_qty}->{new_qty}')
+    events.push({'type': 'pipeline', 'stage': 'rack_add',
+                 'tag_uid': tag_uid, 'item_id': item_id,
+                 'item_name': item_name, 'quantity': new_qty})
 
 
 def _handle_return_gate(client, payload):

@@ -61,7 +61,7 @@ DEBUG           = True
 LED_PIN             = 2    # GPIO2 — onboard LED (active HIGH on most ESP32 dev boards)
 LED_ACTIVE_LOW      = False  # set True if your board's LED is active LOW
 WORKER_AUTH_TIMEOUT = 300   # seconds — sliding-window session TTL per reader
-REQUIRE_WORKER_AUTH = True   # True: item scans silently blocked until badge tapped
+REQUIRE_WORKER_AUTH = False  # Rack reader: no badge required
                               # False: item scans proceed but logged as 'system'
 
 # ── MQTT authentication (leave blank if broker has no auth) ───────────────────

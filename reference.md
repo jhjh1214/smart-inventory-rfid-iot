@@ -4,13 +4,23 @@
 
 ---
 
+## 0. FYP Objectives Alignment
+
+| Objective | How the system addresses it |
+|-----------|----------------------------|
+| Design and implement an IoT-enabled system for automated inventory tracking using RFID technology | Four ESP32 microcontrollers with RC522 RFID readers are stationed at the factory writer, factory exit, warehouse gate, and warehouse rack. Tags are written at manufacture and scanned automatically at every pipeline stage — no manual barcode entry at any point. |
+| Enable real-time data synchronisation between RFID devices and cloud storage | MQTT (Mosquitto) delivers scan events from each ESP32 to the backend within milliseconds. Server-Sent Events (SSE) push inventory updates to the dashboard in real time. The system runs on-premise by default; cloud deployment (PostgreSQL on a managed provider + cloud-hosted Flask backend + cloud MQTT broker) is supported with a database driver swap and a single hostname change in `config.py` — no architectural changes required. |
+| Develop a dashboard for inventory visualisation and efficient management | A full-featured web dashboard with eight tabs: live inventory, analytics (ABC classification, demand forecasting, EOQ, risk scoring), RFID tag state tracking, worker sessions, manufacturing pipeline, alerts, and a tamper-evident audit trail. Role-based access control (admin / manager / viewer) is enforced server-side on every endpoint. |
+
+---
+
 ## 1. System Overview
 
 **System name:** Smart Inventory Management System (RFID/IoT)
 
 **Purpose:** Automate product tracking across the full supply chain — from manufacturing tagging through warehouse receiving, racking, dispatch, and customer returns — using RFID tags and ESP32 microcontrollers, with a real-time web dashboard for management oversight.
 
-**Deployment model:** On-premise LAN installation. The server (mini-PC or Raspberry Pi 4) runs entirely within the company network. No cloud dependency. Sells as a hardware + software bundle alongside the ESP32 reader units.
+**Deployment model:** On-premise LAN installation by default — the server (mini-PC or Raspberry Pi 4) runs entirely within the company network, with no cloud dependency. The decoupled architecture (ESP32 → MQTT broker → Flask backend → database) also supports full cloud deployment: replace SQLite with PostgreSQL on any managed provider, host the Flask app and Mosquitto on a cloud VM or managed MQTT service, and update the broker hostname in `config.py`. ESP32 boards then connect to the cloud backend over any Wi-Fi network without requiring a fixed LAN IP or VPN.
 
 **Key value propositions:**
 - Zero manual barcode scanning — all tracking is passive RFID
@@ -439,7 +449,7 @@ Tags are distinguishable by the prefix in block 1: `ITEM-` routes to the product
 
 | Limitation | Possible Enhancement |
 |------------|---------------------|
-| SQLite single-writer | Migrate to PostgreSQL for concurrent write workloads |
+| SQLite single-writer | PostgreSQL migration is supported: swap `sqlite3` for `psycopg2`, change `?` placeholders to `%s`, and `AUTOINCREMENT` to `SERIAL`. Enables cloud deployment with no architectural changes. |
 | No HTTPS | Add TLS termination via nginx reverse proxy |
 | 5-minute session TTL fixed | Make TTL configurable per zone in `workers` table |
 | No redundant broker | Add MQTT bridge / cluster for high availability |

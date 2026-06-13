@@ -33,14 +33,25 @@ A full-stack, industrial-grade inventory management system built around RFID tag
 
 ### On-Premise Deployment
 
-This system is designed to run **entirely on a local company network** — no cloud, no public URL required. The recommended setup:
+The default setup runs **entirely on a local company network** — no cloud, no public URL required:
 
 - A mini-PC (or Raspberry Pi 4) runs Mosquitto + Flask + SQLite on the LAN.
 - All ESP32 boards connect to the same Wi-Fi network and publish to the LAN broker.
 - Dashboard staff access `http://inventory.company.local` via an internal DNS A record.
 - Remote management can be added via VPN (no port forwarding to the public internet).
 
-This makes the system a plug-in module for an existing ERP environment — selling hardware plus software as a single unit, self-contained.
+### Cloud Deployment
+
+The decoupled architecture (ESP32 → MQTT broker → Flask backend → database) supports full cloud deployment with minimal code changes — directly addressing the FYP objective of *real-time data synchronisation between RFID devices and cloud storage*:
+
+| Component | Cloud equivalent |
+|-----------|-----------------|
+| SQLite (`inventory.db`) | PostgreSQL on any managed provider (Supabase, Railway, Neon, AWS RDS) — swap `sqlite3` for `psycopg2`, change `?` placeholders to `%s`, `AUTOINCREMENT` → `SERIAL` |
+| Flask app + MQTT subscriber | Deploy to Railway, Render, Fly.io, or any Linux VM |
+| Mosquitto broker | Run on the same cloud server, or use a managed broker (HiveMQ Cloud / EMQX Cloud free tier) |
+| ESP32 boards | Change `broker` in `config.py` to the cloud server hostname — no other firmware change required |
+
+Once the broker hostname is set in `config.py`, each ESP32 connects over any Wi-Fi network to the cloud backend — no fixed LAN IP, no VPN.
 
 ---
 
@@ -546,8 +557,8 @@ Follow the interactive prompts to write `EMP-001` through `EMP-004` to four RFID
 | Microcontroller | ESP32 (MicroPython 1.23) |
 | RFID | MFRC522 / RC522, MIFARE Classic 1K |
 | Messaging | MQTT via Mosquitto; paho-mqtt (backend), umqtt.simple (ESP32) |
-| Backend | Python 3, Flask, SQLite |
+| Backend | Python 3, Flask, SQLite (on-premise) / PostgreSQL (cloud) |
 | Real-time push | Server-Sent Events (SSE) |
 | Frontend | Tailwind CSS (CDN), Chart.js v4, vanilla JS |
 | Auth | Flask sessions, Werkzeug PBKDF2-SHA256 password hashing |
-| Deployment | Gunicorn, systemd, internal DNS / LAN |
+| Deployment | On-premise: Gunicorn + systemd + LAN; Cloud: Railway / Render + managed PostgreSQL + cloud MQTT broker |

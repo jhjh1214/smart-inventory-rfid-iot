@@ -935,7 +935,8 @@ def _handle_warehouse_rack(client, payload):
     c = conn.cursor()
     tag = _get_tag_with_item(c, tag_uid)
 
-    # ── return_pending → worker places item back on shelf (+1 qty) ────────────
+    # ── return_pending → returned (+1 qty) → racked (location recorded) ────────
+    # Two transactions from one scan so the audit trail shows the full state path.
     if tag and tag['state'] == 'return_pending':
         item_id   = tag['item_id']
         item_name = tag['item_name']
@@ -944,16 +945,23 @@ def _handle_warehouse_rack(client, payload):
         c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
         new_qty  = c.fetchone()['quantity']
         prev_qty = new_qty - 1
+        # 1. returned — qty +1
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
+                   VALUES (?, 'returned', 1, ?, ?, ?, ?, ?)''',
+                  (item_id, prev_qty, new_qty, tag_uid,
+                   f'returned via rack:{rack_location}', device_id))
+        # 2. racked — qty 0, location recorded
         c.execute('''UPDATE rfid_tags SET state = 'racked', rack_location = ?,
                      last_scan = CURRENT_TIMESTAMP WHERE uid = ?''', (rack_location, tag_uid))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
-                   VALUES (?, 'rack_return', 1, ?, ?, ?, ?, ?)''',
-                  (item_id, prev_qty, new_qty, tag_uid,
-                   f'return finalised at rack:{rack_location}', device_id))
+                   VALUES (?, 'racked', 0, ?, ?, ?, ?, ?)''',
+                  (item_id, new_qty, new_qty, tag_uid,
+                   f'racked at {rack_location} after return', device_id))
         conn.commit()
         conn.close()
-        print(f'[MQTT] RACK_RTN   {tag_uid} -> {item_name}  qty {prev_qty}->{new_qty}  (return finalised)')
+        print(f'[MQTT] RACK_RTN   {tag_uid} -> {item_name}  qty {prev_qty}->{new_qty}  (returned -> racked)')
         events.push({'type': 'pipeline', 'stage': 'rack_return',
                      'tag_uid': tag_uid, 'item_id': item_id,
                      'item_name': item_name, 'quantity': new_qty})

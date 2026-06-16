@@ -135,7 +135,11 @@ Every RFID tag follows a strict one-way state machine. Once dispatched, a tag ca
                                               │
                     [warehouse_rack]          │  (worker places back on shelf)
                                               ▼
-                                           racked  ──► (qty +1)
+                                           returned ──► (qty +1)
+                                              │
+                    [warehouse_rack]          │  (same scan, two audit rows)
+                                              ▼
+                                           racked
                                               │  (cycle repeats)
 ```
 

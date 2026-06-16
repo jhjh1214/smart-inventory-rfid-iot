@@ -75,10 +75,11 @@ Tags transition through states deterministically. Invalid transitions are reject
 | `tagged` | factory_writer | — (item exists, tag registered) |
 | `in_transit` | factory_exit | — |
 | `received` | warehouse_gate | qty +1 |
-| `racked` | warehouse_rack (rack_add) | qty +1 |
+| `racked` | warehouse_rack | qty +1 |
 | `dispatched` | warehouse_gate | qty −1 (terminal) |
 | `return_pending` | Dashboard admin (Return button) | — (flags tag for physical return) |
-| `racked` | warehouse_rack (rack_return) | qty +1 (return finalised) |
+| `returned` | warehouse_rack (same scan as below) | qty +1 |
+| `racked` | warehouse_rack (same scan as above) | — (location recorded) |
 
 **Return flow with 4 boards:** There is no dedicated return-desk board in the current setup. Returns are handled in two steps: (1) admin marks the tag `return_pending` via the dashboard; (2) the warehouse worker scans the item at the rack reader (board 4), which detects the `return_pending` state and finalises the return. A `return_gate` board can replace step 2 when the hardware is available — the backend handler is already implemented.
 
@@ -243,12 +244,12 @@ write_jobs (
 | `tagged` | factory_writer (new tag written) |
 | `in_transit` | factory_exit |
 | `received` | warehouse_gate (inbound) |
-| `racked` | warehouse_rack (rack_add / rack_return) |
+| `racked` | warehouse_rack — shelf placement |
 | `dispatched` | warehouse_gate (outbound) |
-| `return_requested` | Dashboard admin marks tag for return (state → return_pending) |
-| `rack_return` | warehouse_rack finalises a return_pending tag (qty +1, state → racked) |
-| `rack_add` | warehouse_rack places a new or non-racked tag on shelf (qty +1) |
-| `rack_remove` | warehouse_rack removes a racked tag from shelf (qty −1) |
+| `return_requested` | Dashboard admin marks tag for return (state → return_pending, qty 0) |
+| `returned` | warehouse_rack — return finalised (qty +1); immediately followed by `racked` in same scan |
+| `rack_add` | warehouse_rack — new or non-racked tag placed on shelf (qty +1) |
+| `rack_remove` | warehouse_rack — racked tag picked off shelf (qty −1) |
 | `item_added` | Dashboard create item |
 | `item_deleted` | Dashboard delete item |
 | `tag_removed` | Dashboard delete tag |

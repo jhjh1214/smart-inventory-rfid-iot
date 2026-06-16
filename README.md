@@ -99,7 +99,7 @@ ESP32 #4 (esp32-04) — Warehouse Rack
                               and return finalisation when tag is return_pending (qty +1)
 ```
 
-Each board runs the **same `main.py` firmware**. Only `config.py` differs per board.
+Boards 1–3 run a shared multi-role `main.py`. Board 4 runs a simplified `main.py` (rack-only, no worker auth). All boards share `rfid_reader.py`, `mfrc522.py`, and `boot.py`. Only `config.py` differs per board.
 
 > **Worker authentication** is implemented in the backend and ESP32 firmware but is currently disabled on board 4 (`REQUIRE_WORKER_AUTH = False`) due to hardware constraints. Re-enable it per board by setting `REQUIRE_WORKER_AUTH = True` in `config.py` when additional reader capacity is available.
 
@@ -500,7 +500,7 @@ python -m esptool --chip esp32 --port COM<N> --baud 460800 write_flash -z 0x1000
 
 #### Step 2 — Set `config.py` for each board, then upload
 
-Each board uses the **same** `main.py`, `rfid_reader.py`, `mfrc522.py`. Only `config.py` changes.
+Boards 1–3 use the shared multi-role `main.py`. Board 4 uses its own simplified `main.py` (rack reader only). All boards share `rfid_reader.py`, `mfrc522.py`, and `boot.py`. Only `config.py` changes per board.
 
 **Board 1 — esp32-01 — Factory Writer**
 ```python

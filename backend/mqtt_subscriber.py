@@ -918,8 +918,11 @@ def _handle_warehouse_gate(client, payload):
 
 def _handle_warehouse_rack(client, payload):
     """
-    Simple toggle: scan = add to rack (+1 qty), scan again = remove from rack (-1 qty).
-    No worker auth required.
+    Rack reader logic (no worker auth required on board 4):
+
+    return_pending  → rack scan finalises the return: qty +1, state racked  (rack_return)
+    racked          → rack scan removes from shelf:   qty -1, state received (rack_remove)
+    new / other     → rack scan places on shelf:      qty +1, state racked   (rack_add)
     """
     tag_uid       = payload.get('tag_uid')
     item_id       = payload.get('item_id') or ''
@@ -932,7 +935,31 @@ def _handle_warehouse_rack(client, payload):
     c = conn.cursor()
     tag = _get_tag_with_item(c, tag_uid)
 
-    # ── Tag is currently on the rack → remove it (-1 qty) ────────────────────
+    # ── return_pending → worker places item back on shelf (+1 qty) ────────────
+    if tag and tag['state'] == 'return_pending':
+        item_id   = tag['item_id']
+        item_name = tag['item_name']
+        c.execute('''UPDATE items SET quantity = quantity + 1,
+                     updated_at = CURRENT_TIMESTAMP WHERE id = ?''', (item_id,))
+        c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
+        new_qty  = c.fetchone()['quantity']
+        prev_qty = new_qty - 1
+        c.execute('''UPDATE rfid_tags SET state = 'racked', rack_location = ?,
+                     last_scan = CURRENT_TIMESTAMP WHERE uid = ?''', (rack_location, tag_uid))
+        c.execute('''INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
+                   VALUES (?, 'rack_return', 1, ?, ?, ?, ?, ?)''',
+                  (item_id, prev_qty, new_qty, tag_uid,
+                   f'return finalised at rack:{rack_location}', device_id))
+        conn.commit()
+        conn.close()
+        print(f'[MQTT] RACK_RTN   {tag_uid} -> {item_name}  qty {prev_qty}->{new_qty}  (return finalised)')
+        events.push({'type': 'pipeline', 'stage': 'rack_return',
+                     'tag_uid': tag_uid, 'item_id': item_id,
+                     'item_name': item_name, 'quantity': new_qty})
+        return
+
+    # ── racked → worker picks item off shelf (-1 qty) ─────────────────────────
     if tag and tag['state'] == 'racked':
         item_id   = tag['item_id']
         item_name = tag['item_name']
@@ -956,7 +983,7 @@ def _handle_warehouse_rack(client, payload):
                      'item_name': item_name, 'quantity': new_qty})
         return
 
-    # ── Tag not on rack → place it on rack (+1 qty) ───────────────────────────
+    # ── new tag or other state → place on shelf (+1 qty) ─────────────────────
     if not tag:
         item = _ensure_item(c, item_id)
         c.execute('INSERT INTO rfid_tags (uid, item_id, state, rack_location) VALUES (?, ?, ?, ?)',

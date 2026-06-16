@@ -95,10 +95,13 @@ ESP32 #3 (esp32-03) — Warehouse Gate
   CS=22  →  warehouse_gate   smart gate: receives in-transit stock OR dispatches racked stock
 
 ESP32 #4 (esp32-04) — Warehouse Rack
-  CS=22  →  warehouse_rack   confirms shelf placement at rack location A1
+  CS=22  →  warehouse_rack   shelf placement (qty +1), shelf removal (qty -1),
+                              and return finalisation when tag is return_pending (qty +1)
 ```
 
 Each board runs the **same `main.py` firmware**. Only `config.py` differs per board.
+
+> **Worker authentication** is implemented in the backend and ESP32 firmware but is currently disabled on board 4 (`REQUIRE_WORKER_AUTH = False`) due to hardware constraints. Re-enable it per board by setting `REQUIRE_WORKER_AUTH = True` in `config.py` when additional reader capacity is available.
 
 ---
 
@@ -126,15 +129,21 @@ Every RFID tag follows a strict one-way state machine. Once dispatched, a tag ca
                                               ▼
                                           dispatched ──► (qty -1)  TERMINAL
                                               │
-                    [return_gate]             │  (customer return)
+                    [dashboard admin]         │  (mark for return)
                                               ▼
-                                           returned  ──► (qty +1)
+                                       return_pending
                                               │
-                    [warehouse_rack]          │
+                    [warehouse_rack]          │  (worker places back on shelf)
                                               ▼
-                                           racked
+                                           racked  ──► (qty +1)
                                               │  (cycle repeats)
 ```
+
+**Return flow (4-board setup):** Because board 4 (warehouse rack) is the only available station after dispatch, returns are handled in two steps:
+1. Admin or supervisor marks the tag as `return_pending` from the dashboard (Tags tab → Return button).
+2. A warehouse worker physically places the item back on the shelf and scans it at board 4. The rack reader detects the `return_pending` state and finalises the return — qty +1, state `racked`, action `rack_return`.
+
+A dedicated return-desk board can be added later; the `return_gate` MQTT topic and backend handler are already implemented for when that hardware is available.
 
 **Legacy mode** (single-reader `inventory/scan` topic):
 

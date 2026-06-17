@@ -484,7 +484,7 @@ def _carton_warehouse_gate(c, conn, client, payload):
                      'item_name': f'Carton {carton_id} ({units}× {carton["item_id"]})',
                      'tag_level': 'carton', 'unit_count': units, 'quantity': new_qty})
 
-    elif state in ('received', 'racked', 'returned', 'in'):
+    elif state in ('received', 'racked', 'picked', 'returned', 'in'):
         # ── Dispatch ─────────────────────────────────────────────────────────
         worker = _get_current_worker(device_id)
         if not worker or worker['role'] != 'supervisor':
@@ -643,7 +643,7 @@ def _pallet_warehouse_gate(c, conn, client, payload):
                      'item_name': f'Pallet {pallet_id} ({len(cartons)} cartons, {grand_total} units)',
                      'tag_level': 'pallet', 'unit_count': grand_total})
 
-    elif state in ('received', 'racked', 'returned', 'in'):
+    elif state in ('received', 'racked', 'picked', 'returned', 'in'):
         # ── Bulk dispatch ─────────────────────────────────────────────────────
         worker = _get_current_worker(device_id)
         if not worker or worker['role'] != 'supervisor':
@@ -920,10 +920,11 @@ def _handle_warehouse_rack(client, payload):
     """
     Rack reader — four cases, no worker auth required:
 
-    return_pending  → returned (+1) then racked (0)   [two audit rows, one scan]
-    racked          → received (-1)                    [rack_remove — item picked off shelf]
-    unknown tag     → racked  (+1)                     [rack_add   — standalone, first time seen]
-    known pipeline  → racked  ( 0)                     [warehouse_rack — qty already at gate]
+    return_pending       → returned (+1) then racked (0)  [two audit rows, one scan]
+    racked               → picked   ( 0)                  [rack_remove — exits at gate]
+    unknown tag          → racked   (+1)                  [rack_add    — standalone]
+    dispatched/consumed  → security alert                 [fraud guard]
+    known pipeline       → racked   ( 0)                  [warehouse_rack — qty at gate]
     """
     tag_uid       = payload.get('tag_uid')
     item_id       = payload.get('item_id') or ''
@@ -1012,10 +1013,17 @@ def _handle_warehouse_rack(client, payload):
                      'item_name': item["name"], 'quantity': new_qty})
         return
 
-    # ── known pipeline tag (received / in_transit / tagged / etc.) → rack only, no qty change ──
+    # ── dispatched / consumed tag at rack → security alert ───────────────────
+    item_id   = tag['item_id']
+    item_name = tag['item_name']
+    if tag['state'] in ('dispatched', 'consumed'):
+        _security_alert(c, conn, client, item_id, item_name, tag_uid,
+                        f'RACK ALERT: {tag["state"]} tag {tag_uid} ({item_name}) '
+                        f'scanned at rack {rack_location} — possible mis-scan or fraud')
+        return
+
+    # ── known pipeline tag (received / in_transit / tagged / picked / etc.) → rack only, no qty change ──
     # qty was already counted when the tag came through the warehouse gate.
-    item_id    = tag['item_id']
-    item_name  = tag['item_name']
     prev_state = tag['state']
     c.execute('''UPDATE rfid_tags SET state = 'racked', rack_location = ?,
                  last_scan = CURRENT_TIMESTAMP WHERE uid = ?''', (rack_location, tag_uid))

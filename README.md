@@ -125,7 +125,11 @@ Every RFID tag follows a strict one-way state machine. Once dispatched, a tag ca
                                               ▼
                                            racked
                                               │
-                    [warehouse_gate]          │
+                    [warehouse_rack]          │  (picked off shelf)
+                                              ▼
+                                           picked
+                                              │
+                    [warehouse_gate]          │  (exits building — qty confirmed out)
                                               ▼
                                           dispatched ──► (qty -1)  TERMINAL
                                               │

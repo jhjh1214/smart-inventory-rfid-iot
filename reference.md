@@ -76,7 +76,8 @@ Tags transition through states deterministically. Invalid transitions are reject
 | `in_transit` | factory_exit | — |
 | `received` | warehouse_gate | qty +1 |
 | `racked` | warehouse_rack | qty +1 only if tag is new (not yet in pipeline); qty 0 if tag already came through warehouse gate |
-| `dispatched` | warehouse_gate | qty −1 (terminal) |
+| `picked` | warehouse_rack (rack_remove) | qty 0 — item taken off shelf, not yet confirmed out |
+| `dispatched` | warehouse_gate | qty −1 (terminal) — the single confirmed decrement |
 | `return_pending` | Dashboard admin (Return button) | — (flags tag for physical return) |
 | `returned` | warehouse_rack (same scan as below) | qty +1 |
 | `racked` | warehouse_rack (same scan as above) | — (location recorded) |
@@ -249,7 +250,7 @@ write_jobs (
 | `return_requested` | Dashboard admin marks tag for return (state → return_pending, qty 0) |
 | `returned` | warehouse_rack — return finalised (qty +1); immediately followed by `racked` in same scan |
 | `rack_add` | warehouse_rack — new or non-racked tag placed on shelf (qty +1) |
-| `rack_remove` | warehouse_rack — racked tag picked off shelf (qty −1) |
+| `rack_remove` | warehouse_rack — item picked off shelf, state → picked, qty 0 (qty-1 confirmed at gate) |
 | `item_added` | Dashboard create item |
 | `item_deleted` | Dashboard delete item |
 | `tag_removed` | Dashboard delete tag |

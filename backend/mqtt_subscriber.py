@@ -874,7 +874,7 @@ def _handle_warehouse_gate(client, payload):
                      'tag_uid': tag_uid, 'item_id': item_id,
                      'item_name': tag['item_name'], 'quantity': new_qty})
 
-    elif state in ('received', 'racked', 'returned', 'in'):
+    elif state in ('received', 'racked', 'picked', 'returned', 'in'):
         device_id = payload.get('device_id', 'unknown')
         worker    = _get_current_worker(device_id)
         if not worker or worker['role'] != 'supervisor':
@@ -968,28 +968,24 @@ def _handle_warehouse_rack(client, payload):
                      'item_name': item_name, 'quantity': new_qty})
         return
 
-    # ── racked → worker picks item off shelf (-1 qty) ─────────────────────────
+    # ── racked → picked (state only, no qty change) ───────────────────────────
+    # qty-1 happens at warehouse_gate when the item physically exits the building.
     if tag and tag['state'] == 'racked':
         item_id   = tag['item_id']
         item_name = tag['item_name']
-        c.execute('''UPDATE items SET quantity = MAX(0, quantity - 1),
-                     updated_at = CURRENT_TIMESTAMP WHERE id = ?''', (item_id,))
-        c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
-        new_qty = c.fetchone()['quantity']
-        prev    = new_qty + 1
-        c.execute('''UPDATE rfid_tags SET state = 'received', rack_location = NULL,
+        c.execute('''UPDATE rfid_tags SET state = 'picked', rack_location = NULL,
                      last_scan = CURRENT_TIMESTAMP WHERE uid = ?''', (tag_uid,))
         c.execute('''INSERT INTO transactions
                    (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, note, device_id)
-                   VALUES (?, 'rack_remove', -1, ?, ?, ?, ?, ?)''',
-                  (item_id, prev, new_qty, tag_uid, f'removed from rack:{rack_location}', device_id))
-        _low_stock_check(c, client, item_id, item_name, new_qty, tag['low_stock_threshold'], tag['unit'])
+                   VALUES (?, 'rack_remove', 0, ?, ?, ?, ?, ?)''',
+                  (item_id, tag['quantity'], tag['quantity'], tag_uid,
+                   f'picked from rack:{rack_location}', device_id))
         conn.commit()
         conn.close()
-        print(f'[MQTT] RACK-1     {tag_uid} -> {item_name}  qty {prev}->{new_qty}')
+        print(f'[MQTT] PICKED     {tag_uid} -> {item_name}  (no qty change — exits at gate)')
         events.push({'type': 'pipeline', 'stage': 'rack_remove',
                      'tag_uid': tag_uid, 'item_id': item_id,
-                     'item_name': item_name, 'quantity': new_qty})
+                     'item_name': item_name, 'quantity': tag['quantity']})
         return
 
     # ── unknown tag (never seen the pipeline) → standalone add (+1 qty) ────────

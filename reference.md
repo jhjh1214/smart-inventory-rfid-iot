@@ -75,7 +75,7 @@ Tags transition through states deterministically. Invalid transitions are reject
 | `tagged` | factory_writer | — (item exists, tag registered) |
 | `in_transit` | factory_exit | — |
 | `received` | warehouse_gate | qty +1 |
-| `racked` | warehouse_rack | qty +1 |
+| `racked` | warehouse_rack | qty +1 only if tag is new (not yet in pipeline); qty 0 if tag already came through warehouse gate |
 | `dispatched` | warehouse_gate | qty −1 (terminal) |
 | `return_pending` | Dashboard admin (Return button) | — (flags tag for physical return) |
 | `returned` | warehouse_rack (same scan as below) | qty +1 |

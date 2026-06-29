@@ -69,6 +69,13 @@ WORKER_AUTH_TIMEOUT = 300   # seconds — sliding-window session TTL per reader
 REQUIRE_WORKER_AUTH = False  # Rack reader: no badge required
                               # False: item scans proceed but logged as 'system'
 
+# ── Factory writer demo mode ────────────────────────────────────────────────────
+# When True, factory_writer overwrites any existing data on a scanned tag instead
+# of skipping it — lets a small set of physical tags be reused across demo runs.
+# Leave False in production: a real deployment should never silently relabel a
+# tag that's already been issued to a different item.
+DEMO_OVERWRITE_TAGS = False
+
 # ── MQTT authentication (leave blank if broker has no auth) ───────────────────
 MQTT_USER     = ''
 MQTT_PASSWORD = ''

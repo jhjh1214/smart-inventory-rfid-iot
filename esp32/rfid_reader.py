@@ -48,17 +48,19 @@ class RFIDReader:
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
-    def write_item_id(self, item_id):
+    def write_item_id(self, item_id, force=False):
         """
         Detect a tag, check if it is blank, and optionally write item_id.
 
         item_id — string to write, or None to only detect without writing.
+        force   — when True, overwrite existing tag data instead of skipping
+                   (demo mode: reuse the same physical tags across runs).
 
         Returns (uid_str, existing_id, wrote_ok):
           (None,    None,        False)  — no tag on reader
           (uid,     existing_id, False)  — tag already has data; did not overwrite
           (uid,     None,        False)  — blank tag but item_id=None; nothing written
-          (uid,     None,        True)   — blank tag, write succeeded
+          (uid,     None,        True)   — blank tag (or force=True), write succeeded
         """
         stat, _ = self.reader.request(self.reader.REQIDL)
         if stat != self.reader.OK:
@@ -90,7 +92,7 @@ class RFIDReader:
             except Exception:
                 pass
 
-        if existing_id:
+        if existing_id and not force:
             # Tag already has data — never overwrite
             self.reader.stop_crypto1()
             return uid_str, existing_id, False

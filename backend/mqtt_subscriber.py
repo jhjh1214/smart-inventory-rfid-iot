@@ -756,23 +756,14 @@ def _handle_factory_exit(client, payload):
     tag = _get_tag_with_item(c, tag_uid)
 
     if not tag:
-        item_id = payload.get('item_id')
+        item_id   = payload.get('item_id') or None
+        item_name = item_id or 'unknown item'
         if item_id:
             item = _ensure_item(c, item_id)
-            c.execute('INSERT INTO rfid_tags (uid, item_id, state) VALUES (?, ?, ?)',
-                      (tag_uid, item_id, 'in_transit'))
-            c.execute('''INSERT INTO transactions
-                       (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
-                       VALUES (?, 'factory_exit', 0, ?, ?, ?, ?)''',
-                      (item_id, item['quantity'], item['quantity'], tag_uid,
-                       payload.get('device_id', 'unknown')))
-            _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
-            conn.commit()
-            conn.close()
-            events.push({'type': 'pipeline', 'stage': 'in_transit',
-                         'tag_uid': tag_uid, 'item_id': item_id, 'item_name': item_id})
-        else:
-            conn.close()
+            item_name = item['name']
+        _security_alert(c, conn, client, item_id, item_name, tag_uid,
+                        f'SECURITY: unregistered tag {tag_uid} scanned at factory exit '
+                        f'— was never written by factory_writer')
         return
 
     state = tag['state']
@@ -823,29 +814,14 @@ def _handle_warehouse_gate(client, payload):
     tag = _get_tag_with_item(c, tag_uid)
 
     if not tag:
-        item_id = payload.get('item_id')
+        item_id   = payload.get('item_id') or None
+        item_name = item_id or 'unknown item'
         if item_id:
             item = _ensure_item(c, item_id)
-            # Use atomic SQL update to avoid race conditions
-            c.execute('''UPDATE items SET quantity = quantity + 1, updated_at = CURRENT_TIMESTAMP
-                         WHERE id = ?''', (item_id,))
-            c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
-            new_qty = c.fetchone()['quantity']
-            prev = new_qty - 1
-            c.execute('INSERT INTO rfid_tags (uid, item_id, state) VALUES (?, ?, ?)',
-                      (tag_uid, item_id, 'received'))
-            c.execute('''INSERT INTO transactions
-                       (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
-                       VALUES (?, 'warehouse_receive', 1, ?, ?, ?, ?)''',
-                      (item_id, prev, new_qty, tag_uid, payload.get('device_id', 'unknown')))
-            _attach_worker(c, c.lastrowid, payload.get('device_id'), payload.get('worker_id'))
-            conn.commit()
-            conn.close()
-            events.push({'type': 'pipeline', 'stage': 'received',
-                         'tag_uid': tag_uid, 'item_id': item_id,
-                         'item_name': item_id, 'quantity': new_qty})
-        else:
-            conn.close()
+            item_name = item['name']
+        _security_alert(c, conn, client, item_id, item_name, tag_uid,
+                        f'SECURITY: unregistered tag {tag_uid} scanned at warehouse gate '
+                        f'— was never written by factory_writer')
         return
 
     state   = tag['state']

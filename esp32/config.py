@@ -14,10 +14,15 @@ WIFI_NETWORKS = [
         'broker':   '192.168.0.115',
     },
     {
-        'ssid':     'CAMPUS_WIFI_NAME',    # <-- fill in before campus demo
-        'password': 'CAMPUS_PASSWORD',     # <-- fill in
-        'broker':   'CAMPUS_LAPTOP_IP',    # <-- run ipconfig at campus, fill in
+        'ssid':     '***REMOVED***',    
+        'password': '***REMOVED***',     
+        'broker':   'CAMPUS_LAPTOP_IP',    
     },
+    {
+        'ssid':     'iPhone 16 Pro Max',   
+        'password': '***REMOVED***',    
+        'broker':   '172.25.48.137',    
+    }
 ]
 
 # Fallback broker — overwritten at boot by whichever WiFi connects above

@@ -28,7 +28,7 @@ import paho.mqtt.client as mqtt
 from database import get_db
 import events
 
-BROKER        = os.environ.get('MQTT_BROKER', '192.168.0.115')
+BROKER        = os.environ.get('MQTT_BROKER', '127.0.0.1')
 PORT          = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_USER     = os.environ.get('MQTT_USER', '')
 MQTT_PASSWORD = os.environ.get('MQTT_PASSWORD', '')

@@ -136,7 +136,7 @@ def get_pipeline_summary():
     conn = get_db()
     c = conn.cursor()
 
-    stages = ['tagged', 'in_transit', 'received', 'racked',
+    stages = ['tagged', 'in_transit', 'received', 'racked', 'picked',
               'dispatched', 'returned', 'out', 'in', 'consumed']
 
     totals = {}

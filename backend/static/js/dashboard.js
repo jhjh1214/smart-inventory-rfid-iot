@@ -1324,8 +1324,8 @@ const PIPELINE_STAGES = [
   { key:'in_transit', label:'In Transit', color:'#f59e0b', desc:'Left factory floor' },
   { key:'received',   label:'Received',   color:'#3b82f6', desc:'At warehouse dock'  },
   { key:'racked',     label:'Racked',     color:'#22c55e', desc:'On warehouse shelf' },
+  { key:'picked',     label:'Picked',     color:'#14b8a6', desc:'Off shelf, awaiting dispatch' },
   { key:'dispatched', label:'Dispatched', color:'#94a3b8', desc:'Sent to customer'   },
-  { key:'returned',   label:'Returned',   color:'#f97316', desc:'Customer return'    },
 ];
 
 async function fetchPipeline() {
@@ -1383,7 +1383,7 @@ function renderPipelineItems(perItem, items) {
           <div class="text-xs text-gray-400">${esc(row.item_id)}</div>
         </td>
         ${cell('tagged')}${cell('in_transit')}${cell('received')}
-        ${cell('racked')}${cell('dispatched')}${cell('returned')}
+        ${cell('racked')}${cell('picked')}${cell('dispatched')}
       </tr>`;
   }).join('');
 }

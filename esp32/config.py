@@ -9,24 +9,24 @@ DEVICE_ID = 'esp32-04'
 # Find it by running  ipconfig  in Command Prompt on the laptop.
 WIFI_NETWORKS = [
     {
+        'ssid':     '***REMOVED***',
+        'password': '***REMOVED***',
+        'broker':   '10.22.246.85',
+    },
+    {
         'ssid':     'Tong@unifi',
         'password': '***REMOVED***',
         'broker':   '192.168.0.115',
     },
     {
-        'ssid':     '***REMOVED***',    
-        'password': '***REMOVED***',     
-        'broker':   'CAMPUS_LAPTOP_IP',    
-    },
-    {
-        'ssid':     'iPhone 16 Pro Max',   
-        'password': '***REMOVED***',    
-        'broker':   '172.25.48.137',    
+        'ssid':     'iPhone 16 Pro Max',
+        'password': '***REMOVED***',
+        'broker':   '172.25.48.137',
     }
 ]
 
 # Fallback broker — overwritten at boot by whichever WiFi connects above
-MQTT_BROKER = '192.168.0.115'
+MQTT_BROKER = '10.22.246.85'
 MQTT_PORT   = 1883
 
 # ── Multi-reader layout (used when running full pipeline firmware) ────────────

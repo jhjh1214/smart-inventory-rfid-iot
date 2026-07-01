@@ -782,7 +782,7 @@
           </div>
           <button onclick="openAddPOModal()" class="btn-primary text-sm" id="btn-add-po">+ New PO</button>
         </div>
-        <div class="flex gap-2 mb-3 flex-wrap">
+        <div id="po-filters" class="flex gap-2 mb-3 flex-wrap">
           <button onclick="fetchPurchaseOrders('')"      class="btn-sm btn-sm-edit"    data-po-filter="">All</button>
           <button onclick="fetchPurchaseOrders('open')"  class="btn-sm btn-sm-neutral" data-po-filter="open">Open</button>
           <button onclick="fetchPurchaseOrders('partial')" class="btn-sm btn-sm-neutral" data-po-filter="partial">Partial</button>
@@ -792,12 +792,12 @@
           <table class="w-full text-sm table-row-hover">
             <thead class="table-head sticky-head">
               <tr>
+                <th class="th text-center">Created</th>
                 <th class="th text-left">Item</th>
                 <th class="th text-right">Expected</th>
                 <th class="th text-right">Received</th>
+                <th class="th text-left">Progress</th>
                 <th class="th text-center">Status</th>
-                <th class="th text-left">Note</th>
-                <th class="th text-center">Created</th>
                 <th class="th text-center">Actions</th>
               </tr>
             </thead>
@@ -1123,7 +1123,7 @@
           <label class="form-label">CSV File</label>
           <input id="csv-file-input" type="file" accept=".csv" class="form-input" required />
         </div>
-        <div id="import-result" class="hidden"></div>
+        <div id="import-csv-result"></div>
         <div class="flex gap-2 pt-2">
           <button type="submit" class="flex-1 btn-primary">Import</button>
           <button type="button" onclick="closeModal('modal-import-csv')" class="flex-1 btn-secondary">Cancel</button>

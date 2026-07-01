@@ -1768,12 +1768,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Tag Reassignment ──────────────────────────────────────────────────────────
 function openReassignTagModal(uid) {
-  const display = document.getElementById('reassign-old-uid');
-  const input   = document.getElementById('reassign-old-uid-input');
+  const hidden  = document.getElementById('reassign-old-uid');
+  const display = document.getElementById('reassign-old-uid-display');
   const newUid  = document.getElementById('reassign-new-uid');
-  if (display) display.textContent = uid;
-  if (input)   input.value = uid;
-  if (newUid)  newUid.value = '';
+  if (hidden)  hidden.value  = uid;
+  if (display) display.value = uid;
+  if (newUid)  newUid.value  = '';
   openModal('modal-reassign-tag');
 }
 
@@ -1783,7 +1783,7 @@ document.addEventListener('DOMContentLoaded', () => {
   form.addEventListener('submit', async e => {
     e.preventDefault();
     const btn     = form.querySelector('button[type=submit]');
-    const old_uid = document.getElementById('reassign-old-uid-input').value;
+    const old_uid = document.getElementById('reassign-old-uid').value;
     const new_uid = document.getElementById('reassign-new-uid').value.trim();
     if (!new_uid) return showToast('Enter the new tag UID', 'warning');
     _btnLoad(btn, true, 'Reassigning…');
@@ -1850,7 +1850,7 @@ async function fetchPurchaseOrders(statusFilter) {
     _pos = pos;
     renderPOTable(pos);
     document.querySelectorAll('#po-filters button').forEach(btn => {
-      btn.className = `btn-sm ${btn.dataset.filter === statusFilter ? 'btn-sm-edit' : 'btn-sm-neutral'}`;
+      btn.className = `btn-sm ${btn.dataset.poFilter === statusFilter ? 'btn-sm-edit' : 'btn-sm-neutral'}`;
     });
   } catch {
     if (tbody) tbody.innerHTML = _tableError(7);
@@ -1866,7 +1866,7 @@ function renderPOTable(pos) {
     return;
   }
   const statusBadgePO = s => {
-    const map = { open:'badge-info', partial:'badge-warning', fulfilled:'badge-success', cancelled:'badge-neutral' };
+    const map = { open:'badge-info', partial:'badge-warning', complete:'badge-success', cancelled:'badge-neutral' };
     return `<span class="badge ${map[s] || 'badge-neutral'}">${esc(s)}</span>`;
   };
   const canEdit = currentRole === 'admin' || currentRole === 'manager';

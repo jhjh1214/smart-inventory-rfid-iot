@@ -292,7 +292,10 @@ def add_item():
     name    = (data.get('name') or '').strip()
     if not item_id or not name:
         return jsonify({'error': 'id and name are required'}), 400
-    qty = max(0, int(data.get('quantity', 0)))
+    try:
+        qty = max(0, int(data.get('quantity', 0)))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'quantity must be a number'}), 400
     conn = get_db()
     c = conn.cursor()
     try:
@@ -321,7 +324,11 @@ def update_item(item_id):
     c = conn.cursor()
 
     if 'quantity' in data:
-        new_qty = int(data['quantity'])
+        try:
+            new_qty = int(data['quantity'])
+        except (ValueError, TypeError):
+            conn.close()
+            return jsonify({'error': 'quantity must be a number'}), 400
         if new_qty < 0:
             conn.close()
             return jsonify({'error': 'Quantity cannot be negative'}), 400
@@ -884,7 +891,10 @@ def get_write_jobs():
 def create_write_job():
     data     = request.get_json() or {}
     item_id  = data.get('item_id')
-    quantity = int(data.get('quantity', 1))
+    try:
+        quantity = int(data.get('quantity', 1))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'quantity must be a number'}), 400
     if not item_id or quantity < 1:
         return jsonify({'error': 'item_id and quantity required'}), 400
 
@@ -935,7 +945,10 @@ def get_purchase_orders():
 def create_purchase_order():
     data         = request.get_json() or {}
     item_id      = data.get('item_id')
-    expected_qty = int(data.get('expected_qty', 0))
+    try:
+        expected_qty = int(data.get('expected_qty', 0))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'expected_qty must be a number'}), 400
     if not item_id or expected_qty < 1:
         return jsonify({'error': 'item_id and expected_qty required'}), 400
     conn = get_db()
@@ -977,7 +990,11 @@ def update_purchase_order(po_id):
     c.execute(f'UPDATE purchase_orders SET {set_clause} WHERE id = ?', values)
 
     if 'received_qty' in data:
-        new_recv = int(data['received_qty'])
+        try:
+            new_recv = int(data['received_qty'])
+        except (ValueError, TypeError):
+            conn.close()
+            return jsonify({'error': 'received_qty must be a number'}), 400
         exp      = row['expected_qty']
         if new_recv >= exp:
             c.execute("UPDATE purchase_orders SET status = 'complete' WHERE id = ?", (po_id,))

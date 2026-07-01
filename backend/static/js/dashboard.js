@@ -1078,8 +1078,9 @@ function connectSSE() {
       refreshSummary();
       fetchTransactions();
       fetchItems().then(() => highlightItem(data.item_id));
+      fetchTags();
       if (data.stage === 'received' || data.stage === 'dispatched') fetchAlerts();
-      if (data.stage === 'racked') fetchRackInventory();
+      if (['racked','rack_add','rack_remove','rack_return'].includes(data.stage)) fetchRackInventory();
       if (document.getElementById('tab-manufacturing').classList.contains('active')) fetchPipeline();
     }
 

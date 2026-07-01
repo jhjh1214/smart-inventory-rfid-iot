@@ -1077,7 +1077,19 @@ function connectSSE() {
     if (data.type === 'pipeline') {
       refreshSummary();
       fetchTransactions();
-      fetchItems().then(() => highlightItem(data.item_id));
+      // Stages that change item quantity carry data.quantity — patch the row directly
+      // instead of a full HTTP round-trip.  Qty-neutral stages (tagged, in_transit,
+      // racked, rack_remove) skip fetchItems entirely.
+      const qtyStages = ['received','dispatched','rack_add','rack_return','returned'];
+      if (qtyStages.includes(data.stage)) {
+        if (data.quantity !== undefined) {
+          _patchItemQty(data.item_id, data.quantity);
+        } else {
+          fetchItems().then(() => highlightItem(data.item_id));
+        }
+      } else {
+        highlightItem(data.item_id);
+      }
       fetchTags();
       if (data.stage === 'received' || data.stage === 'dispatched') fetchAlerts();
       if (['racked','rack_add','rack_remove','rack_return'].includes(data.stage)) fetchRackInventory();
@@ -1110,6 +1122,14 @@ function connectSSE() {
   };
 
   src.onerror = () => { src.close(); setTimeout(connectSSE, 3000); };
+}
+
+function _patchItemQty(item_id, new_qty) {
+  const idx = _items.findIndex(it => it.id === item_id);
+  if (idx === -1) { fetchItems().then(() => highlightItem(item_id)); return; }
+  _items[idx] = { ..._items[idx], quantity: new_qty };
+  renderItemsTable(_items);
+  highlightItem(item_id);
 }
 
 function highlightItem(item_id) {

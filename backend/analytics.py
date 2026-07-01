@@ -188,26 +188,31 @@ def get_inventory_summary():
     conn = get_db()
     c = conn.cursor()
 
-    c.execute('SELECT COUNT(*) AS n FROM items')
-    total_items = c.fetchone()['n']
+    c.execute('''
+        SELECT
+            COUNT(*) AS total_items,
+            SUM(CASE WHEN quantity > low_stock_threshold THEN 1 ELSE 0 END) AS healthy,
+            SUM(CASE WHEN quantity = 0 THEN 1 ELSE 0 END) AS out_of_stock,
+            SUM(CASE WHEN quantity > 0 AND quantity <= low_stock_threshold THEN 1 ELSE 0 END) AS low_stock
+        FROM items
+    ''')
+    r = c.fetchone()
+    total_items  = r['total_items']  or 0
+    healthy      = r['healthy']      or 0
+    out_of_stock = r['out_of_stock'] or 0
+    low_stock    = r['low_stock']    or 0
 
-    c.execute('SELECT COUNT(*) AS n FROM items WHERE quantity > low_stock_threshold')
-    healthy = c.fetchone()['n']
-
-    c.execute('SELECT COUNT(*) AS n FROM items WHERE quantity = 0')
-    out_of_stock = c.fetchone()['n']
-
-    c.execute('SELECT COUNT(*) AS n FROM items WHERE quantity > 0 AND quantity <= low_stock_threshold')
-    low_stock = c.fetchone()['n']
-
-    c.execute("SELECT COUNT(*) AS n FROM rfid_tags WHERE state = 'out'")
-    tags_out = c.fetchone()['n']
-
-    c.execute("SELECT COUNT(*) AS n FROM rfid_tags WHERE state = 'in'")
-    tags_in = c.fetchone()['n']
-
-    c.execute("SELECT COUNT(*) AS n FROM rfid_tags WHERE state = 'consumed'")
-    tags_consumed = c.fetchone()['n']
+    c.execute('''
+        SELECT
+            SUM(CASE WHEN state = 'out'      THEN 1 ELSE 0 END) AS tags_out,
+            SUM(CASE WHEN state = 'in'       THEN 1 ELSE 0 END) AS tags_in,
+            SUM(CASE WHEN state = 'consumed' THEN 1 ELSE 0 END) AS tags_consumed
+        FROM rfid_tags
+    ''')
+    t = c.fetchone()
+    tags_out      = t['tags_out']      or 0
+    tags_in       = t['tags_in']       or 0
+    tags_consumed = t['tags_consumed'] or 0
 
     c.execute('''
         SELECT COUNT(DISTINCT item_id) AS n FROM transactions
@@ -220,17 +225,18 @@ def get_inventory_summary():
     dead_stock = c.fetchone()['n']
 
     c.execute('''
-        SELECT COUNT(*) AS n FROM transactions
-        WHERE DATE(timestamp) = DATE('now')
+        SELECT
+            SUM(CASE WHEN src = 'txn'   THEN 1 ELSE 0 END) AS today_scans,
+            SUM(CASE WHEN src = 'alert' THEN 1 ELSE 0 END) AS security_today
+        FROM (
+            SELECT 'txn'   AS src FROM transactions WHERE DATE(timestamp) = DATE('now')
+            UNION ALL
+            SELECT 'alert' AS src FROM alerts WHERE alert_type = 'security' AND DATE(timestamp) = DATE('now')
+        )
     ''')
-    today_scans = c.fetchone()['n']
-
-    c.execute('''
-        SELECT COUNT(*) AS n FROM alerts
-        WHERE alert_type = 'security'
-        AND DATE(timestamp) = DATE('now')
-    ''')
-    security_today = c.fetchone()['n']
+    d = c.fetchone()
+    today_scans    = d['today_scans']    or 0
+    security_today = d['security_today'] or 0
 
     conn.close()
 

@@ -87,10 +87,15 @@ try {
     Write-Step 2 "Starting Flask backend"
 
     Write-Warn "Installing Python dependencies..."
-    python -m pip install flask "paho-mqtt>=2.0" -q
+    $req = Join-Path $PSScriptRoot "requirements-pc.txt"
+    if (Test-Path $req) {
+        python -m pip install -r $req -q 2>&1 | Where-Object { $_ -match "^(ERROR|FATAL)" } | ForEach-Object { Write-Warn $_ }
+    } else {
+        python -m pip install flask "paho-mqtt>=2.0" scikit-learn numpy -q 2>&1 | Out-Null
+    }
     Write-OK "Dependencies ready"
 
-    $backendCmd = "Set-Location '$BACKEND'; python app.py"
+    $backendCmd = "Set-Location '" + $BACKEND + "'; python app.py"
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -WindowStyle Normal
 
     Write-Warn "Waiting for backend on port 5000..."

@@ -88,11 +88,14 @@ try {
 
     Write-Warn "Installing Python dependencies..."
     $req = Join-Path $PSScriptRoot "requirements-pc.txt"
+    $prevEA = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     if (Test-Path $req) {
-        python -m pip install -r $req -q 2>&1 | Where-Object { $_ -match "^(ERROR|FATAL)" } | ForEach-Object { Write-Warn $_ }
+        python -m pip install -r $req -q --disable-pip-version-check 2>&1 | Out-Null
     } else {
-        python -m pip install flask "paho-mqtt>=2.0" scikit-learn numpy -q 2>&1 | Out-Null
+        python -m pip install flask "paho-mqtt>=2.0" scikit-learn numpy -q --disable-pip-version-check 2>&1 | Out-Null
     }
+    $ErrorActionPreference = $prevEA
     Write-OK "Dependencies ready"
 
     $backendCmd = "Set-Location '" + $BACKEND + "'; python app.py"

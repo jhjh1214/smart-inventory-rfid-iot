@@ -18,7 +18,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from database import init_db, get_db, DB_PATH
 from analytics import (get_all_analytics, get_item_analytics,
                         get_transaction_trends, get_abc_analysis,
-                        get_inventory_summary, get_pipeline_summary)
+                        get_inventory_summary, get_pipeline_summary,
+                        detect_scan_anomalies)
 from mqtt_subscriber import (start_mqtt, get_status as mqtt_status,
                               publish as mqtt_publish,
                               get_active_sessions,
@@ -533,6 +534,12 @@ def api_analytics_trends():
 @login_required
 def api_analytics_abc():
     return jsonify(get_abc_analysis())
+
+
+@app.route('/api/analytics/anomalies')
+@login_required
+def api_analytics_anomalies():
+    return jsonify(detect_scan_anomalies())
 
 
 # ── RFID Tags ─────────────────────────────────────────────────────────────────

@@ -501,7 +501,7 @@ async function fetchTransactionTrends() {
 // ── Analytics tab ─────────────────────────────────────────────────────────────
 async function fetchAnalytics() {
   const tbody = document.getElementById('analytics-tbody');
-  if (tbody && !_analytics.length) tbody.innerHTML = _skeletonRows(7);
+  if (tbody && !_analytics.length) tbody.innerHTML = _skeletonRows(8);
   try {
     const [analyticsData, abcRaw, items] = await Promise.all([
       fetch('/api/analytics').then(r => r.json()),
@@ -551,13 +551,20 @@ async function fetchAnalytics() {
     const tbody = document.getElementById('analytics-tbody');
     if (tbody) {
       if (!analyticsData.length) {
-        tbody.innerHTML = _tableEmpty(7, 'chart', 'No analytics data yet',
+        tbody.innerHTML = _tableEmpty(8, 'chart', 'No analytics data yet',
           'Analytics are calculated once items have transaction history. Add items and scan RFID tags to see insights.');
       } else tbody.innerHTML = analyticsData.map(d => {
-        const item   = itemMap[d.item_id] || {};
-        const abc    = abcData[d.item_id];
+        const item    = itemMap[d.item_id] || {};
+        const abc     = abcData[d.item_id];
         const riskCls = d.risk_score >= 80 ? 'text-red-600 font-semibold' :
                         d.risk_score >= 50 ? 'text-amber-600 font-semibold' : 'text-green-600';
+        const isML    = d.forecast_method === 'gradient_boosting';
+        const fcastCell = isML
+          ? `<span class="font-mono">${d.forecast_demand}</span><span class="ml-1 text-xs text-purple-500 font-semibold">ML</span>`
+          : `<span class="font-mono text-gray-400">${d.forecast_demand}</span>`;
+        const anomalyCell = d.anomaly
+          ? `<span class="badge badge-warning text-xs">⚠ Anomaly</span>`
+          : `<span class="text-gray-300 text-xs">—</span>`;
         return `
           <tr>
             <td class="px-4 py-3">
@@ -568,18 +575,19 @@ async function fetchAnalytics() {
               ${abc ? abcBadge(abc.class) : '<span class="text-gray-400 text-xs">—</span>'}
             </td>
             <td class="px-4 py-3 text-right font-mono text-sm">${d.avg_daily_usage}</td>
-            <td class="px-4 py-3 text-right font-mono text-sm">${d.forecast_demand}</td>
+            <td class="px-4 py-3 text-right text-sm">${fcastCell}</td>
             <td class="px-4 py-3 text-right font-mono text-sm">${d.eoq}</td>
             <td class="px-4 py-3 text-right font-mono text-sm">${d.days_remaining >= 999 ? '∞' : d.days_remaining}</td>
             <td class="px-4 py-3 text-center">
               <span class="${riskCls} text-sm">${d.risk_score}</span>
             </td>
+            <td class="px-4 py-3 text-center">${anomalyCell}</td>
           </tr>`;
       }).join('');
     }
   } catch {
     const tbody = document.getElementById('analytics-tbody');
-    if (tbody) tbody.innerHTML = _tableError(7);
+    if (tbody) tbody.innerHTML = _tableError(8);
   }
 }
 
@@ -1499,10 +1507,12 @@ function exportWorkersCSV() {
 function exportAnalyticsCSV() {
   if (!_analytics.length) return showToast('No data to export', 'warning');
   _downloadCSV(
-    [['Item ID','Avg Daily Usage','Forecast Demand','EOQ','Days Remaining','Risk Score','ABC Class'],
-     ..._analytics.map(d => [d.item_id, d.avg_daily_usage, d.forecast_demand, d.eoq,
+    [['Item ID','Avg Daily Usage','ML Forecast','Forecast Method','EOQ','Days Remaining','Risk Score','ABC Class','Anomaly'],
+     ..._analytics.map(d => [d.item_id, d.avg_daily_usage, d.forecast_demand,
+       d.forecast_method || '—', d.eoq,
        d.days_remaining >= 999 ? 'Unlimited' : d.days_remaining, d.risk_score,
-       (abcData[d.item_id] || {}).class || '—'])],
+       (abcData[d.item_id] || {}).class || '—',
+       d.anomaly ? 'Yes' : 'No'])],
     'analytics.csv'
   );
   showToast('Analytics exported as CSV', 'success');

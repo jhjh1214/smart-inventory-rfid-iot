@@ -2,6 +2,13 @@ import math
 from datetime import datetime, timedelta
 from database import get_db
 
+try:
+    from sklearn.ensemble import GradientBoostingRegressor, IsolationForest
+    import numpy as np
+    _SKLEARN = True
+except ImportError:
+    _SKLEARN = False
+
 ALPHA        = 0.3
 REORDER_COST = 10.0
 HOLDING_COST = 0.5
@@ -34,6 +41,32 @@ def _exponential_smoothing(values):
     return round(s, 2)
 
 
+def _gb_forecast(usages):
+    """Gradient Boosting demand forecast using lag + rolling-mean features.
+    Falls back to exponential smoothing when sklearn is unavailable or data < 7 days."""
+    if not _SKLEARN or len(usages) < 7:
+        return _exponential_smoothing(usages), 'exponential_smoothing'
+
+    vals = np.array(usages, dtype=float)
+    n = len(vals)
+    X, y = [], []
+    for i in range(3, n):
+        ma3 = vals[max(0, i - 3):i].mean()
+        ma7 = vals[max(0, i - 7):i].mean()
+        X.append([i, vals[i - 1], vals[i - 2], vals[i - 3], ma3, ma7])
+        y.append(vals[i])
+
+    if len(X) < 4:
+        return _exponential_smoothing(usages), 'exponential_smoothing'
+
+    model = GradientBoostingRegressor(n_estimators=50, max_depth=3, random_state=42)
+    model.fit(X, y)
+    ma3_last = vals[-3:].mean()
+    ma7_last = vals[-7:].mean()
+    pred = model.predict([[n, vals[-1], vals[-2], vals[-3], ma3_last, ma7_last]])[0]
+    return round(float(max(0.0, pred)), 2), 'gradient_boosting'
+
+
 def _eoq(avg_daily_demand):
     annual = avg_daily_demand * 365
     if annual <= 0:
@@ -53,21 +86,83 @@ def get_item_analytics(item_id, current_quantity):
     daily  = _get_daily_usage(item_id)
     usages = [d['used'] for d in daily]
 
-    avg_daily    = sum(usages) / len(usages) if usages else 1.0
-    forecast     = _exponential_smoothing(usages)
-    eoq          = _eoq(avg_daily)
-    days_left    = current_quantity / avg_daily if avg_daily > 0 else 999.0
-    risk         = _risk_score(days_left)
+    avg_daily              = sum(usages) / len(usages) if usages else 1.0
+    forecast, forecast_method = _gb_forecast(usages)
+    eoq                    = _eoq(forecast if forecast > 0 else avg_daily)
+    days_left              = current_quantity / forecast if forecast > 0 else 999.0
+    risk                   = _risk_score(days_left)
 
     return {
-        'item_id':        item_id,
+        'item_id':         item_id,
         'avg_daily_usage': round(avg_daily, 2),
         'forecast_demand': forecast,
+        'forecast_method': forecast_method,
         'eoq':             eoq,
         'days_remaining':  round(min(days_left, 999), 1),
         'risk_score':      risk,
         'daily_history':   daily[-7:],
     }
+
+
+def detect_scan_anomalies():
+    """Isolation Forest anomaly detection on recent scan transactions.
+    Returns list of anomalous transaction dicts (most-recent last)."""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, item_id, action, quantity_change, timestamp, device_id
+        FROM transactions
+        ORDER BY timestamp ASC
+        LIMIT 500
+    ''')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+
+    if not _SKLEARN or len(rows) < 10:
+        return []
+
+    features, valid_rows = [], []
+    prev_ts = None
+    for r in rows:
+        raw = (r['timestamp'] or '')[:19]
+        try:
+            ts = datetime.strptime(raw, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            continue
+        gap = (ts - prev_ts).total_seconds() if prev_ts else 0.0
+        features.append([
+            ts.hour,
+            ts.weekday(),
+            abs(r['quantity_change'] or 0),
+            min(gap, 86400),
+        ])
+        valid_rows.append(r)
+        prev_ts = ts
+
+    if len(features) < 10:
+        return []
+
+    X = np.array(features, dtype=float)
+    model = IsolationForest(n_estimators=100, contamination=0.05, random_state=42)
+    labels = model.fit_predict(X)
+
+    return [
+        {
+            'txn_id':          r['id'],
+            'item_id':         r['item_id'],
+            'action':          r['action'],
+            'quantity_change': r['quantity_change'],
+            'device_id':       r['device_id'],
+            'timestamp':       r['timestamp'],
+        }
+        for r, label in zip(valid_rows, labels)
+        if label == -1
+    ]
+
+
+def _anomaly_item_ids():
+    """Set of item_ids with anomalous recent scans — used to flag per-item analytics."""
+    return {a['item_id'] for a in detect_scan_anomalies()}
 
 
 def get_all_analytics():
@@ -76,7 +171,13 @@ def get_all_analytics():
     c.execute('SELECT id, quantity FROM items')
     items = c.fetchall()
     conn.close()
-    return [get_item_analytics(r['id'], r['quantity']) for r in items]
+    flagged = _anomaly_item_ids()
+    result = []
+    for r in items:
+        a = get_item_analytics(r['id'], r['quantity'])
+        a['anomaly'] = r['id'] in flagged
+        result.append(a)
+    return result
 
 
 # ── Aggregate analytics ───────────────────────────────────────────────────────

@@ -1,6 +1,41 @@
 """Tests for webhook CRUD and test endpoint."""
+import urllib.error
+import urllib.request
+
 import pytest
 from database import get_db
+
+
+@pytest.fixture
+def sent_webhooks(monkeypatch):
+    """Capture outbound webhook deliveries instead of making real HTTP calls.
+
+    Without this the test endpoint POSTs to http://example.com/hook over the
+    real internet, which answers 405 and makes the test fail on its own network
+    conditions rather than on the code under test.
+    """
+    sent = []
+
+    class _Response:
+        status = 200
+
+        def read(self):
+            return b'{}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _fake_urlopen(req, timeout=None):
+        sent.append({'url': req.full_url,
+                     'method': req.get_method(),
+                     'body': req.data})
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, 'urlopen', _fake_urlopen)
+    return sent
 
 
 def _create_webhook(client, name='Alert Hook', url='http://example.com/hook', events='low_stock'):
@@ -146,11 +181,14 @@ class TestDeleteWebhook:
 
 
 class TestTestWebhook:
-    def test_admin_can_test_webhook(self, admin_client):
+    def test_admin_can_test_webhook(self, admin_client, sent_webhooks):
         _create_webhook(admin_client)
         wid = admin_client.get('/api/webhooks').get_json()[0]['id']
         r = admin_client.post(f'/api/webhooks/{wid}/test')
         assert r.status_code == 200
+        assert len(sent_webhooks) == 1
+        assert sent_webhooks[0]['url'] == 'http://example.com/hook'
+        assert sent_webhooks[0]['method'] == 'POST'
 
     def test_test_nonexistent_returns_404(self, admin_client):
         r = admin_client.post('/api/webhooks/99999/test')
@@ -162,8 +200,20 @@ class TestTestWebhook:
         r = manager_client.post(f'/api/webhooks/{wid}/test')
         assert r.status_code == 403
 
-    def test_response_has_message(self, admin_client):
+    def test_response_has_message(self, admin_client, sent_webhooks):
         _create_webhook(admin_client)
         wid = admin_client.get('/api/webhooks').get_json()[0]['id']
         data = admin_client.post(f'/api/webhooks/{wid}/test').get_json()
         assert 'message' in data
+
+    def test_unreachable_endpoint_reports_failure(self, admin_client, monkeypatch):
+        # The delivery failure path must surface a 502 and an error message.
+        def _boom(req, timeout=None):
+            raise urllib.error.URLError('connection refused')
+
+        monkeypatch.setattr(urllib.request, 'urlopen', _boom)
+        _create_webhook(admin_client)
+        wid = admin_client.get('/api/webhooks').get_json()[0]['id']
+        r = admin_client.post(f'/api/webhooks/{wid}/test')
+        assert r.status_code == 502
+        assert 'error' in r.get_json()

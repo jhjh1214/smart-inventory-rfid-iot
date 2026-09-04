@@ -126,21 +126,32 @@ class TestIdempotency:
         assert count == 3
 
     def test_migrations_tracked_in_schema_version(self, test_db):
+        # Every migration in init_db records exactly one schema_version row,
+        # numbered contiguously from 1. Asserting that shape rather than a fixed
+        # count keeps this test honest as migrations are appended.
         conn = get_db()
         c = conn.cursor()
-        c.execute('SELECT COUNT(*) FROM schema_version')
-        count = c.fetchone()[0]
+        c.execute('SELECT version FROM schema_version ORDER BY version')
+        versions = [r[0] for r in c.fetchall()]
         conn.close()
-        assert count == 10
+        assert versions, 'no migrations were recorded'
+        assert versions == list(range(1, len(versions) + 1))
 
     def test_migrations_not_rerun(self, test_db):
-        init_db()
         conn = get_db()
         c = conn.cursor()
         c.execute('SELECT COUNT(*) FROM schema_version')
-        count = c.fetchone()[0]
+        before = c.fetchone()[0]
         conn.close()
-        assert count == 10  # still 10, not doubled
+
+        init_db()  # second run against an already-migrated database
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM schema_version')
+        after = c.fetchone()[0]
+        conn.close()
+        assert after == before  # not doubled
 
 
 class TestSeeding:

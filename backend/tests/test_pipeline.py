@@ -154,13 +154,20 @@ class TestHandleFactoryExit:
         conn.close()
         assert row is not None
 
-    def test_unknown_tag_with_item_id_auto_creates(self, test_db):
+    def test_unregistered_tag_raises_security_alert(self, test_db):
+        # An unregistered tag at factory exit is a security event, not an
+        # auto-registration: no rfid_tags row may be created for it.
         mqtt_subscriber._handle_factory_exit(MockClient(), {
             'tag_uid': 'FE-NEW', 'item_id': 'item-001', 'device_id': 'gate-out',
         })
-        tag = _get_tag('FE-NEW')
-        assert tag is not None
-        assert tag['state'] == 'in_transit'
+        assert _get_tag('FE-NEW') is None
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT id FROM alerts WHERE alert_type = 'security' "
+                  "AND message LIKE '%FE-NEW%'")
+        row = c.fetchone()
+        conn.close()
+        assert row is not None
 
     def test_creates_factory_exit_transaction(self, test_db):
         _seed_tag('FE-TXN', 'item-001', 'tagged')
@@ -295,7 +302,8 @@ class TestHandleWarehouseRack:
     def test_received_becomes_racked(self, test_db):
         _seed_tag('WR-01', 'item-001', 'received')
         mqtt_subscriber._handle_warehouse_rack(MockClient(), {
-            'tag_uid': 'WR-01', 'rack_location': 'B3', 'device_id': 'rack-scanner',
+            'tag_uid': 'WR-01', 'item_id': 'item-001',
+            'rack_location': 'B3', 'device_id': 'rack-scanner',
         })
         tag = _get_tag('WR-01')
         assert tag['state'] == 'racked'
@@ -304,21 +312,24 @@ class TestHandleWarehouseRack:
     def test_returned_becomes_racked(self, test_db):
         _seed_tag('WR-02', 'item-001', 'returned')
         mqtt_subscriber._handle_warehouse_rack(MockClient(), {
-            'tag_uid': 'WR-02', 'rack_location': 'C1', 'device_id': 'rack-scanner',
+            'tag_uid': 'WR-02', 'item_id': 'item-001',
+            'rack_location': 'C1', 'device_id': 'rack-scanner',
         })
         assert _get_tag('WR-02')['state'] == 'racked'
 
     def test_in_state_becomes_racked(self, test_db):
         _seed_tag('WR-03', 'item-001', 'in')
         mqtt_subscriber._handle_warehouse_rack(MockClient(), {
-            'tag_uid': 'WR-03', 'rack_location': 'D1', 'device_id': 'rack-scanner',
+            'tag_uid': 'WR-03', 'item_id': 'item-001',
+            'rack_location': 'D1', 'device_id': 'rack-scanner',
         })
         assert _get_tag('WR-03')['state'] == 'racked'
 
     def test_invalid_state_creates_security_alert(self, test_db):
         _seed_tag('WR-INV', 'item-001', 'dispatched')
         mqtt_subscriber._handle_warehouse_rack(MockClient(), {
-            'tag_uid': 'WR-INV', 'rack_location': 'A1', 'device_id': 'rack-scanner',
+            'tag_uid': 'WR-INV', 'item_id': 'item-001',
+            'rack_location': 'A1', 'device_id': 'rack-scanner',
         })
         conn = get_db()
         c = conn.cursor()
@@ -328,16 +339,21 @@ class TestHandleWarehouseRack:
         assert row is not None
 
     def test_invalid_state_tag_unchanged(self, test_db):
-        _seed_tag('WR-UNCH', 'item-001', 'tagged')
+        # 'consumed' is terminal: the rack raises a security alert and must
+        # leave the tag's state alone. ('tagged' is NOT invalid here — a
+        # pipeline tag racks normally, so it would not exercise this path.)
+        _seed_tag('WR-UNCH', 'item-001', 'consumed')
         mqtt_subscriber._handle_warehouse_rack(MockClient(), {
-            'tag_uid': 'WR-UNCH', 'rack_location': 'X9', 'device_id': 'rack-scanner',
+            'tag_uid': 'WR-UNCH', 'item_id': 'item-001',
+            'rack_location': 'X9', 'device_id': 'rack-scanner',
         })
-        assert _get_tag('WR-UNCH')['state'] == 'tagged'
+        assert _get_tag('WR-UNCH')['state'] == 'consumed'
 
     def test_creates_warehouse_rack_transaction(self, test_db):
         _seed_tag('WR-TXN', 'item-001', 'received')
         mqtt_subscriber._handle_warehouse_rack(MockClient(), {
-            'tag_uid': 'WR-TXN', 'rack_location': 'E5', 'device_id': 'rack-scanner',
+            'tag_uid': 'WR-TXN', 'item_id': 'item-001',
+            'rack_location': 'E5', 'device_id': 'rack-scanner',
         })
         conn = get_db()
         c = conn.cursor()
@@ -346,11 +362,42 @@ class TestHandleWarehouseRack:
         conn.close()
         assert row is not None
 
-    def test_unknown_tag_does_nothing(self, test_db):
-        # Should not crash
+    def test_payload_without_item_id_is_ignored(self, test_db):
+        # The firmware always sends item_id; a payload missing it is malformed
+        # and must be dropped rather than half-applied.
         mqtt_subscriber._handle_warehouse_rack(MockClient(), {
             'tag_uid': 'WR-GHOST', 'rack_location': 'X1', 'device_id': 'rack-scanner',
         })
+        assert _get_tag('WR-GHOST') is None
+
+    def test_unknown_tag_is_standalone_rack_add(self, test_db):
+        # A brand-new tag first seen at the rack never passed the gate, so this
+        # is the one rack case that moves quantity (+1) — see CLAUDE.md 4.
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT quantity FROM items WHERE id = 'item-001'")
+        before = c.fetchone()['quantity']
+        conn.close()
+
+        mqtt_subscriber._handle_warehouse_rack(MockClient(), {
+            'tag_uid': 'WR-NEW', 'item_id': 'item-001',
+            'rack_location': 'X1', 'device_id': 'rack-scanner',
+        })
+
+        tag = _get_tag('WR-NEW')
+        assert tag is not None
+        assert tag['state'] == 'racked'
+        assert tag['rack_location'] == 'X1'
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT quantity FROM items WHERE id = 'item-001'")
+        assert c.fetchone()['quantity'] == before + 1
+        c.execute("SELECT quantity_change FROM transactions "
+                  "WHERE tag_uid = 'WR-NEW' AND action = 'rack_add'")
+        row = c.fetchone()
+        conn.close()
+        assert row is not None and row['quantity_change'] == 1
 
 
 class TestHandleReturnGate:

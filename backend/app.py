@@ -25,6 +25,7 @@ from mqtt_subscriber import (start_mqtt, get_status as mqtt_status,
                               get_active_sessions,
                               TOPIC_FACTORY_JOB)
 import events
+import assistant
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'inv-secret-key-change-in-prod')
@@ -1456,6 +1457,40 @@ def import_items_csv():
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok', 'created': created, 'updated': updated, 'errors': errors})
+
+
+# ── LLM assistant ────────────────────────────────────────────────────────────
+# Read-only: every tool the model can reach only SELECTs. Login is required
+# because the answers summarise inventory data, but no role can write through
+# it - a viewer asking a question is exactly as harmless as a viewer reading
+# the dashboard.
+
+@app.route('/api/assistant', methods=['GET'])
+@login_required
+def assistant_status():
+    return jsonify(assistant.status())
+
+
+@app.route('/api/assistant', methods=['POST'])
+@login_required
+def assistant_ask():
+    data     = request.get_json(silent=True) or {}
+    question = data.get('question', '')
+    history  = data.get('history') or []
+    if not isinstance(history, list):
+        return jsonify({'error': 'history must be a list of {role, content} turns'}), 400
+
+    try:
+        result = assistant.ask(question, history)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except assistant.AssistantUnavailable as e:
+        return jsonify({'error': 'Assistant not configured: %s' % e}), 503
+    except assistant.AssistantError as e:
+        print('[Assistant] %s' % e)
+        return jsonify({'error': 'The assistant could not answer right now.'}), 502
+
+    return jsonify({'status': 'ok', **result})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

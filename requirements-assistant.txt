@@ -1,0 +1,14 @@
+# Optional - only needed for the /api/assistant LLM endpoint.
+#
+# Deliberately NOT in requirements-pc.txt: the core LAN deployment (broker,
+# backend, dashboard, ESP32 pipeline) runs without either SDK, and both imports
+# are guarded. Install only the provider you intend to use.
+#
+#   .venv\Scripts\python -m pip install -r requirements-assistant.txt
+#
+# Then set the provider and its key, e.g. for the free Gemini tier:
+#   $env:ASSISTANT_PROVIDER = "gemini"
+#   $env:GEMINI_API_KEY     = "<key from https://aistudio.google.com/apikey>"
+
+google-genai>=1.0        # ASSISTANT_PROVIDER=gemini  (default; free AI Studio tier)
+anthropic>=1.0           # ASSISTANT_PROVIDER=anthropic (paid per token)

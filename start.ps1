@@ -3,9 +3,16 @@
 
 $ErrorActionPreference = "Stop"
 
-$MOSQUITTO = "C:\Program Files (x86)\Mosquitto\mosquitto.exe"
+# Mosquitto installs to Program Files on x64 and Program Files (x86) on x86;
+# winget uses the x64 path. Probe both, then fall back to PATH.
+$MOSQUITTO_CANDIDATES = @(
+    "C:\Program Files\mosquitto\mosquitto.exe",
+    "C:\Program Files (x86)\Mosquitto\mosquitto.exe"
+)
 $CONF      = Join-Path $PSScriptRoot "mosquitto.conf"
 $BACKEND   = Join-Path $PSScriptRoot "backend"
+$VENV      = Join-Path $PSScriptRoot ".venv"
+$VENV_PY   = Join-Path $VENV "Scripts\python.exe"
 
 function Write-Step($n, $msg) {
     Write-Host ""
@@ -38,10 +45,20 @@ try {
     # 1. Mosquitto
     Write-Step 1 "Starting Mosquitto MQTT broker"
 
-    if (-not (Test-Path $MOSQUITTO)) {
-        Write-Fail "Mosquitto not found at: $MOSQUITTO"
-        throw "Mosquitto missing - install from https://mosquitto.org/download/"
+    $MOSQUITTO = $null
+    foreach ($candidate in $MOSQUITTO_CANDIDATES) {
+        if (Test-Path $candidate) { $MOSQUITTO = $candidate; break }
     }
+    if (-not $MOSQUITTO) {
+        $onPath = Get-Command mosquitto.exe -ErrorAction SilentlyContinue
+        if ($onPath) { $MOSQUITTO = $onPath.Source }
+    }
+    if (-not $MOSQUITTO) {
+        Write-Fail "Mosquitto not found in any of:"
+        foreach ($candidate in $MOSQUITTO_CANDIDATES) { Write-Fail "    $candidate" }
+        throw "Mosquitto missing - install it with:  winget install EclipseFoundation.Mosquitto"
+    }
+    Write-OK "Found broker at $MOSQUITTO"
 
     $procs = Get-Process -Name "mosquitto" -ErrorAction SilentlyContinue
     if ($procs) {
@@ -86,19 +103,29 @@ try {
     # 2. Flask backend
     Write-Step 2 "Starting Flask backend"
 
-    Write-Warn "Installing Python dependencies..."
+    if (-not (Test-Path $VENV_PY)) {
+        if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+            throw "Python not found on PATH - install Python 3.9+ first"
+        }
+        Write-Warn "Creating virtual environment (.venv)..."
+        python -m venv $VENV
+        if (-not (Test-Path $VENV_PY)) { throw "Failed to create .venv" }
+        Write-OK "Virtual environment created"
+    }
+
+    Write-Warn "Installing Python dependencies into .venv..."
     $req = Join-Path $PSScriptRoot "requirements-pc.txt"
     $prevEA = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     if (Test-Path $req) {
-        python -m pip install -r $req -q --disable-pip-version-check 2>&1 | Out-Null
+        & $VENV_PY -m pip install -r $req -q --disable-pip-version-check 2>&1 | Out-Null
     } else {
-        python -m pip install flask "paho-mqtt>=2.0" scikit-learn numpy -q --disable-pip-version-check 2>&1 | Out-Null
+        & $VENV_PY -m pip install flask "paho-mqtt>=2.0" scikit-learn numpy -q --disable-pip-version-check 2>&1 | Out-Null
     }
     $ErrorActionPreference = $prevEA
     Write-OK "Dependencies ready"
 
-    $backendCmd = "Set-Location '" + $BACKEND + "'; python app.py"
+    $backendCmd = "Set-Location '" + $BACKEND + "'; & '" + $VENV_PY + "' app.py"
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -WindowStyle Normal
 
     Write-Warn "Waiting for backend on port 5000..."

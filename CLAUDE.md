@@ -276,8 +276,20 @@ hyperparameter in `analytics.py` invalidates a published equation.
 
 Two claims do not hold, and are the priority work items:
 
-1. **"LLM Assistant"** appears in the Figure 1 architecture caption. No such code exists.
-   Build it or remove it from the figure.
+1. ~~**"LLM Assistant"** appears in the Figure 1 architecture caption. No such code exists.~~
+   **Built.** `POST /api/assistant` (`backend/assistant.py`) answers natural-language
+   questions using tool-use over five read-only queries in `backend/assistant_tools.py`.
+   Provider is swappable via `ASSISTANT_PROVIDER` - `gemini` (default, free tier) or
+   `anthropic` - with one shared tool layer and system prompt per adapter
+   (`assistant_gemini.py`, `assistant_anthropic.py`). Both SDKs are optional and guarded
+   like sklearn, so the LAN deployment is unaffected when neither is installed; install them
+   from `requirements-assistant.txt`.
+
+   No tool writes anything - invariant 2 still holds, MQTT remains the only writer of
+   pipeline state, and a test asserts every tool leaves the database byte-identical.
+   `@login_required` only, because read-only access matches what a viewer already sees.
+
+   **Still open:** no dashboard UI hosts it. The endpoint works; there is no Assistant tab.
 2. ~~**Gradient Boosting "trained on 30-day dispatch history"**~~ — **fixed.** The three
    queries now read `warehouse_dispatch` / `warehouse_receive` instead of the legacy
    `scan_in` / `scan_out`, and the 30-day demand series is zero-filled so the lag and

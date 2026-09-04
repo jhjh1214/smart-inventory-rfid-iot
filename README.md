@@ -25,6 +25,7 @@ moves the entire load.
 - [Accountability & Audit Trail](#accountability--audit-trail)
 - [Dashboard](#dashboard)
 - [Analytics Engine](#analytics-engine)
+- [LLM Assistant](#llm-assistant)
 - [Integrations — Webhooks, CSV, Backup](#integrations--webhooks-csv-backup)
 - [MQTT Topics](#mqtt-topics)
 - [Project Structure](#project-structure)
@@ -561,6 +562,68 @@ demo handler, are excluded from every analytics query.
 
 ---
 
+## LLM Assistant
+
+`POST /api/assistant`. Answers natural-language questions over the live
+inventory, pipeline, and audit data - the component named in the UEC Figure 1
+caption.
+
+**Tool use, not text-to-SQL.** The model never sees or writes SQL. It chooses
+from five fixed, parameterised, read-only queries in `backend/assistant_tools.py`:
+
+| Tool | Returns |
+|------|---------|
+| `list_inventory(low_stock_only)` | Catalogue items and stock levels |
+| `get_demand_forecast(item_id)` | Forecast, EOQ, risk score, days of cover |
+| `search_transactions(item_id, action, limit)` | Audit trail rows, newest first |
+| `list_alerts(unread_only, limit)` | Low-stock and security alerts |
+| `get_pipeline_status()` | Tag counts per pipeline stage |
+
+There is deliberately **no tool that writes anything**. Physical movement flows
+exclusively through the MQTT handlers (architecture invariant 2), and the
+assistant must not become a second writer. A test asserts that calling every
+tool leaves items, transactions, tags and alerts byte-identical.
+
+**Provider is swappable** via `ASSISTANT_PROVIDER`; both adapters share one tool
+layer and one system prompt, so switching changes nothing the dashboard can see
+except answer quality.
+
+| Provider | Value | Key | Cost |
+|----------|-------|-----|------|
+| Gemini (default) | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Free on the AI Studio tier, rate-limited |
+| Claude | `anthropic` | `ANTHROPIC_API_KEY` | ~$0.03-0.06 per question on Opus 5 |
+
+Measured prompt cost: a ~1,016-token fixed prefix (system prompt + five tool
+schemas) plus 133-1,356 tokens per tool result, typically ~3,000 input and ~600
+output tokens per question across two round trips.
+
+**Setup.** Both SDKs are optional and guarded, exactly like sklearn in
+`analytics.py` - the backend boots, the dashboard works, and the ESP32 pipeline
+runs with neither installed. `GET /api/assistant` reports readiness and, when
+unavailable, says precisely why.
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-assistant.txt
+$env:ASSISTANT_PROVIDER = "gemini"
+$env:GEMINI_API_KEY     = "<key from https://aistudio.google.com/apikey>"
+```
+
+**Security.** `@login_required` only, deliberately: every tool is read-only, so a
+viewer asking a question is exactly as harmless as a viewer reading the
+dashboard. Item names, transaction notes, and alert messages are operator- and
+scanner-supplied, so the system prompt instructs the model to treat tool output
+as data and never as instructions. Provider errors are logged server-side and
+returned to the client as a generic 502 rather than leaking quota or project
+detail.
+
+> **Offline note.** A cloud provider needs outbound internet, which is in tension
+> with the offline-LAN deployment story (see
+> [Security Posture](#security-posture--known-limitations)). Running a local
+> model would resolve that; the provider seam exists so a third adapter is a
+> small change.
+
+---
+
 ## Integrations — Webhooks, CSV, Backup
 
 **Outbound webhooks** (`webhooks` table, admin-managed). Each webhook subscribes to a
@@ -1068,7 +1131,7 @@ current codebase:
 | Features: hour-of-day, weekday, \|Δquantity\|, inter-scan gap | ✅ Exactly these four |
 | EOQ from ML-predicted demand, S = RM 10, H = 0.5 | ✅ `REORDER_COST = 10.0`, `HOLDING_COST = 0.5` |
 | Hardware cost under RM 300 | ✅ 4× ESP32 + 4× RC522 + tags |
-| **"LLM Assistant" in the Figure 1 architecture** | ❌ **Does not exist in the codebase** |
+| **"LLM Assistant" in the Figure 1 architecture** | ✅ `POST /api/assistant` — tool-use over five read-only queries; see [LLM Assistant](#llm-assistant). No dashboard UI yet |
 
 ---
 
@@ -1076,17 +1139,17 @@ current codebase:
 
 Ordered by what a reviewer or examiner is most likely to notice.
 
-### 1. The LLM Assistant claimed in UEC v2 does not exist
+### 1. The LLM Assistant claimed in UEC v2 — **built**
 
-Figure 1's caption reads *"Flask backend (AI Analytics + LLM Assistant)"*. There is no LLM,
-chatbot, or assistant code anywhere in `backend/` — a search for `anthropic`, `openai`, `llm`,
-`chatbot`, and `assistant` returns nothing. **Either build it or remove it from the figure
-before submission.** Presenting an unimplemented component in an architecture diagram is the
-single highest-risk item in the current package.
+Figure 1's caption reads *"Flask backend (AI Analytics + LLM Assistant)"*, and until now no
+such code existed. `POST /api/assistant` now implements it: tool-use over five read-only
+queries against `items`, `transactions`, `alerts` and the analytics engine. See
+[LLM Assistant](#llm-assistant).
 
-If building it, the natural shape given the existing code: a `/api/assistant` endpoint that
-answers natural-language questions over `items`, `transactions`, and `alerts` — the data is
-already structured and the dashboard already has a modal pattern to host it.
+The provider is swappable and defaults to Gemini's free tier, so the claim holds without a
+paid dependency. **Still outstanding:** no dashboard UI hosts it yet — the endpoint is
+reachable but there is no Assistant tab, so a live demo needs one built or must be driven
+from curl.
 
 ### 2. Analytics are blind to pipeline traffic — **fixed**
 

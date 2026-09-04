@@ -16,6 +16,7 @@ moves the entire load.
 
 ## Table of Contents
 
+- [New Device Onboarding — Start Here](#new-device-onboarding--start-here)
 - [System Architecture](#system-architecture)
 - [Hardware](#hardware)
 - [Tag Lifecycle — State Machine](#tag-lifecycle--state-machine)
@@ -30,10 +31,143 @@ moves the entire load.
 - [REST API](#rest-api)
 - [Database Schema](#database-schema)
 - [Setup](#setup)
-- [Moving the Project to a New Device](#moving-the-project-to-a-new-device)
 - [Testing](#testing)
+- [Academic Deliverables — UEC, PRISM, IEEE, Report](#academic-deliverables--uec-prism-ieee-report)
+- [Specification Gaps to Close](#specification-gaps-to-close)
 - [Security Posture & Known Limitations](#security-posture--known-limitations)
 - [Tech Stack](#tech-stack)
+
+---
+
+## New Device Onboarding — Start Here
+
+This folder is **self-contained**: code, firmware image, tooling, and every academic document
+live inside it. Zip it, copy it to the new machine, unzip, and work through this section.
+
+### What you must install (not in the zip)
+
+| Software | Why | Notes |
+|----------|-----|-------|
+| **Python 3.11+** | Backend and tooling | Tested on 3.14.2. Tick *Add Python to PATH* during install. |
+| **Mosquitto** | MQTT broker | From [mosquitto.org/download](https://mosquitto.org/download/). `start.ps1` expects `C:\Program Files (x86)\Mosquitto\mosquitto.exe` — edit `$MOSQUITTO` at the top of that file if it lands elsewhere. |
+| **Git** | Version control | Optional if you only ever work from the zip, but the repo remote is `github.com/jhjh1214/smart-inventory-rfid-iot`. |
+| **CP210x / CH340 USB driver** | ESP32 serial | Usually auto-installs on Windows 11. If no COM port appears, install the driver for your board's USB chip. |
+
+### Step-by-step
+
+**1. Unzip somewhere without spaces or OneDrive sync**, e.g. `C:\dev\smart-inventory-rfid-iot`.
+OneDrive can lock `inventory.db` mid-write and corrupt WAL journals.
+
+**2. Install the Python dependencies.**
+
+```powershell
+cd C:\dev\smart-inventory-rfid-iot
+pip install -r requirements-pc.txt
+pip install -r requirements-test.txt     # optional, for the test suite
+```
+
+**3. Recreate the ESP32 toolchain venv.** `tools/esptoolenv/` ships in the zip for reference,
+but **a moved virtualenv does not work** — its `pyvenv.cfg` hardcodes the absolute Python path
+and its own location from the old machine. Delete it and rebuild:
+
+```powershell
+Remove-Item tools\esptoolenv -Recurse -Force
+python -m venv tools\esptoolenv
+tools\esptoolenv\Scripts\pip install esptool mpremote
+```
+
+Everything the venv provides is two `pip install`s — nothing is lost by rebuilding it.
+
+**4. Set a session signing key.** Without this, every install shares the same hardcoded
+fallback key and sessions are forgeable.
+
+```powershell
+# Per session:
+$env:SECRET_KEY = "<a-long-random-value>"
+# Or permanently:
+setx SECRET_KEY "<a-long-random-value>"
+```
+
+**5. Decide about the database.** `backend/inventory.db` is gitignored and is **not** in the
+repo — but it *is* in the zip if it existed when you zipped. Options:
+
+- **Fresh start (recommended):** delete `backend/inventory.db`. It is recreated on first run
+  with 8 demo items, 3 accounts, and 4 demo workers.
+- **Keep history:** leave the file in place. Migrations run automatically on startup.
+
+**6. Find the new machine's LAN IP.**
+
+```powershell
+ipconfig            # look for IPv4 Address on your active adapter
+```
+
+`start.ps1` also prints every candidate IP after it launches.
+
+**7. Point the ESP32 boards at the new server.** Edit `esp32/config.py` so the `broker` field of
+the matching `WIFI_NETWORKS` entry is that IP, then re-upload `config.py` to **every board**:
+
+```powershell
+tools\esptoolenv\Scripts\mpremote connect COM7 cp esp32\config.py :config.py + reset
+```
+
+Boards silently fail to reach the backend if you skip this. `boot.py` tries each network in
+order and adopts the broker IP of whichever one connects — that is what makes the boards work
+across home Wi-Fi, campus Wi-Fi, and a phone hotspot without reflashing.
+
+**8. Open the Windows firewall** for inbound TCP **1883** (Mosquitto) and **5000** (Flask) on
+the *Private* profile. Without this the boards and other machines cannot reach the server.
+
+```powershell
+New-NetFirewallRule -DisplayName "Mosquitto 1883" -Direction Inbound -Protocol TCP -LocalPort 1883 -Profile Private -Action Allow
+New-NetFirewallRule -DisplayName "Inventory 5000" -Direction Inbound -Protocol TCP -LocalPort 5000 -Profile Private -Action Allow
+```
+
+**9. Launch.**
+
+```powershell
+.\start.bat
+```
+
+It stops any stale broker, starts Mosquitto, installs dependencies, starts the backend, opens
+the dashboard, and prints the host's LAN IPs.
+
+**10. Verify, in this order:**
+
+- Dashboard loads at `http://localhost:5000` and you can log in as `admin` / `admin123`.
+- The topbar MQTT pill reads **MQTT Live** (not *MQTT Offline*).
+- Power on one ESP32; within 30 s `/api/status` shows a recent `device_last_seen`.
+- Scan one tag — the Overview tab's live feed updates within a second, and a row appears in
+  the Audit Trail.
+- `python -m pytest -q` → 377 passed, 10 failed ([expected](#testing)).
+
+### Reflashing a board from scratch
+
+Only needed if a board's MicroPython is missing or corrupt. The firmware image is bundled at
+`firmware/ESP32_GENERIC-20260406-v1.28.0.bin`.
+
+```powershell
+tools\esptoolenv\Scripts\python -m esptool --chip esp32 --port COM7 erase-flash
+tools\esptoolenv\Scripts\python -m esptool --chip esp32 --port COM7 --baud 460800 write_flash -z 0x1000 firmware\ESP32_GENERIC-20260406-v1.28.0.bin
+```
+
+Then upload the application files — see [ESP32 Firmware](#2-esp32-firmware).
+
+### Finding your COM port
+
+```powershell
+Get-PnpDevice -Class Ports | Where-Object {$_.Status -eq 'OK'} | Select-Object FriendlyName
+```
+
+### Gotchas that cost time
+
+- **`.claude/settings.local.json`** contains absolute paths from the old machine (permission
+  allowlist entries). Stale entries are harmless — they just cause an extra approval prompt.
+- **Don't run two backends at once.** SQLite is in WAL mode with a 3 s busy timeout, but two
+  processes also mean two MQTT subscriptions and every scan is processed twice.
+- **`sklearn` and `numpy` are optional.** If they fail to install, the backend still runs —
+  forecasting falls back to exponential smoothing and anomaly detection returns empty.
+- **The dashboard needs internet** for Tailwind, Chart.js, and jsPDF (CDN). On an offline
+  network it renders unstyled with no charts. See [Open gaps](#open-gaps).
 
 ---
 
@@ -483,6 +617,22 @@ smart-inventory-rfid-iot/
 │   ├── mfrc522.py              Low-level MFRC522 driver (MicroPython)
 │   └── tag_writer.py           Interactive tag-writing utility (setup / demo)
 │
+├── firmware/
+│   └── ESP32_GENERIC-20260406-v1.28.0.bin   MicroPython v1.28.0 image for reflashing
+│
+├── tools/
+│   └── esptoolenv/             Python venv for esptool + mpremote — REBUILD on a new
+│                                 machine, a moved venv does not work (see onboarding)
+│
+├── docs/                       Academic deliverables — all gitignored, zip-only
+│   ├── uec/                    UEC abstract (v1, v2), UEC poster, template sample
+│   ├── prism/                  PRISM 2026 poster (+ Final Version/UG077)
+│   ├── ieee/                   IEEE technical paper (docx + pdf)
+│   ├── report/                 Full FYP2 report, presentation, submission forms,
+│   │                             Appendix C, Technical Paper, UEC PDF (~432 MB)
+│   ├── media/                  Demo video (331 MB), use-case scenario diagram
+│   └── figures/                Figure exports for the report/poster
+│
 ├── mosquitto.conf              listener 1883, allow_anonymous true
 ├── start.bat / start.ps1       Windows one-click launcher
 ├── requirements-pc.txt         Backend runtime dependencies
@@ -492,6 +642,12 @@ smart-inventory-rfid-iot/
 ├── README.md                   This file
 └── reference.md                Report-oriented reference (maps to FYP chapters)
 ```
+
+**What git tracks vs what the zip carries.** The repository contains only source, tests, and
+documentation — roughly 1.4 MB. `docs/`, `firmware/*.bin`, `tools/esptoolenv/`, and
+`backend/inventory.db` are gitignored: together they are about **830 MB**, and GitHub rejects
+any single file over 100 MB (`docs/report/Smart_Inventory_FYP2_Presentation.pptx` alone is
+349 MB). They travel by zip, not by `git push` — never `git add -f` them.
 
 ---
 
@@ -734,12 +890,13 @@ Internal DNS: `inventory.company.local → <server LAN IP>`.
 
 ### 2. ESP32 Firmware
 
-**Requirements:** MicroPython v1.24+, `mpremote`, `esptool`.
+**Requirements:** MicroPython v1.24+, `mpremote`, `esptool` — both provided by
+`tools/esptoolenv` (rebuild it first, see [onboarding step 3](#step-by-step)).
 
-**Step 1 — flash MicroPython (once per board)**
+**Step 1 — flash MicroPython (once per board).** The image is bundled at `firmware/`.
 ```
-python -m esptool --chip esp32 --port COM<N> erase-flash
-python -m esptool --chip esp32 --port COM<N> --baud 460800 write_flash -z 0x1000 ESP32_GENERIC-20260406-v1.28.0.bin
+tools\esptoolenv\Scripts\python -m esptool --chip esp32 --port COM<N> erase-flash
+tools\esptoolenv\Scripts\python -m esptool --chip esp32 --port COM<N> --baud 460800 write_flash -z 0x1000 firmware\ESP32_GENERIC-20260406-v1.28.0.bin
 ```
 
 **Step 2 — set `config.py` per board**
@@ -789,37 +946,6 @@ Follow the prompts to write `EMP-001` … `EMP-004` (and item IDs) to physical t
 
 ---
 
-## Moving the Project to a New Device
-
-1. **Clone and install**
-   ```powershell
-   git clone https://github.com/jhjh1214/smart-inventory-rfid-iot.git
-   cd smart-inventory-rfid-iot
-   pip install -r requirements-pc.txt
-   ```
-2. **Install Mosquitto.** `start.ps1` expects `C:\Program Files (x86)\Mosquitto\mosquitto.exe`
-   — edit `$MOSQUITTO` in `start.ps1` if it lands elsewhere.
-3. **Carry the data over (optional).** `backend/inventory.db` is gitignored. To keep existing
-   inventory, copy it manually, or download a backup from the old machine via
-   `GET /api/export/backup` and drop it in as `backend/inventory.db`. Skipping this step gives
-   you a fresh seeded database.
-4. **Find the new LAN IP** — `ipconfig`, or read the list `start.ps1` prints on startup.
-5. **Update `esp32/config.py`** so the matching `WIFI_NETWORKS` entry's `broker` is the new IP,
-   then re-upload `config.py` to every board:
-   ```
-   mpremote connect COM<N> cp config.py :config.py + reset
-   ```
-6. **Open Windows Firewall** for inbound TCP 1883 (Mosquitto) and 5000 (Flask) on the private
-   network profile, or the boards and other machines cannot reach the server.
-7. **Set a real `SECRET_KEY`** — otherwise every install shares the same signing key:
-   ```powershell
-   $env:SECRET_KEY = "<a-long-random-value>"
-   ```
-8. **Run `.\start.bat`** and confirm the dashboard's MQTT pill reads *MQTT Live*.
-9. **Verify** by scanning one tag at any station and watching the live feed update.
-
----
-
 ## Testing
 
 ```bash
@@ -841,6 +967,113 @@ environment dependence rather than product regressions:
 | `TestHandleWarehouseRack::*` (5) | Call the handler without `item_id`, which it now requires. |
 | `test_unknown_tag_with_item_id_auto_creates` | Asserts auto-creation at factory exit; behaviour intentionally changed to raise a security alert instead. |
 | `TestTestWebhook::*` (2) | Post to `http://example.com/hook` over the real internet (returns 405). Needs mocking. |
+
+---
+
+## Academic Deliverables — UEC, PRISM, IEEE, Report
+
+All documents live under `docs/` and travel with the zip (gitignored — see
+[Project Structure](#project-structure)).
+
+| Deliverable | Location | Latest file | State |
+|-------------|----------|-------------|-------|
+| **UEC abstract** | `docs/uec/` | `UEC_Abstract_FYP_v2.docx` | v2 — current submission draft |
+| **UEC poster** | `docs/uec/` | `UEC_Poster_FYP.pptx` | Drafted |
+| **PRISM 2026 poster** | `docs/prism/` | `FIST_PRISM_2026_Poster_Final_Tai_Ke_Ying_Dorothy.pptx` / `.pdf`, plus `Final Version/UG077.pptx` | Final, submitted |
+| **IEEE technical paper** | `docs/ieee/` | `ieee_paper_done.pdf`, `ieee_paper_updated.docx` | Complete |
+| **FYP2 report** | `docs/report/` | `FYP2_Report_..._v2_1.docx`, `Tai_Ke_Ying_Dorothy_1211111348.pdf` | Submitted (July final submission folder included) |
+| **Presentation** | `docs/report/` | `Smart_Inventory_FYP2_Presentation.pptx` (349 MB) | Delivered |
+| **Demo video** | `docs/media/` | `Fyp demo video.MOV` (331 MB) | Recorded |
+
+### UEC abstract — what changed in v2
+
+**Title:** *AI-Driven Smart Inventory Management System using RFID and IoT*
+**Authors:** Tai Ke Ying Dorothy (1211111348), Lim Jun Hong (1211110418)
+
+| Aspect | v1 | v2 (current) |
+|--------|----|----|
+| Format | Long-form abstract + extended prose | Condensed 5-section short paper: Introduction, Methodology, Key Results, Model Equations, Conclusion |
+| Faculty / campus | Faculty of Engineering and Technology, Cyberjaya | **Faculty of Information Science and Technology, Melaka** |
+| Contact | Placeholder `author@mmu.edu.my` | Real student emails |
+| ESP32 node count | **Three** nodes | **Four** nodes (factory writer, factory exit, warehouse gate, warehouse rack) |
+| Anomaly result | "detection of 12 anomalous transactions" | Generalised to "detects anomalous transactions automatically" |
+| Model detail | Named only | Full hyperparameters: GBR `n_estimators=50, max_depth=3`; IsolationForest `n_estimators=100, contamination=0.05` |
+| Equations | — | **New:** EOQ `√(2·D̂·S/H)` with S = RM 10, H = 0.5; GB prediction `D̂ⁿ⁺¹ = Σₘ γₘhₘ(xⁿ)` over `[n, lag₁, lag₂, lag₃, MA₃, MA₇]` |
+| Comparison table | — | **New:** Table 1 — latency < 1 s vs > 5 min manual; GB vs exponential smoothing; automatic vs no anomaly detection |
+| References | — | **New:** Friedman (2001) Gradient Boosting; Liu et al. (2008) Isolation Forest; Want (2006) RFID |
+| Figure 1 caption | Architecture only | Architecture **"+ LLM Assistant"** — see the gap below |
+
+### Claims the abstract makes that the code must support
+
+These are the v2 claims a reviewer could check against the repository. Verified against the
+current codebase:
+
+| Claim | Status |
+|-------|--------|
+| Four ESP32 nodes with RC522 across a five-stage pipeline | ✅ Backend handles all four station roles; `esp32/main.py` in the repo is the rack variant |
+| MQTT → Mosquitto → Flask, SQLite in WAL mode | ✅ `get_db()` sets `journal_mode=WAL` |
+| Five-stage state machine `tagged → in_transit → received → racked → dispatched` | ✅ `mqtt_subscriber.py` |
+| Sub-second dashboard updates via SSE | ✅ `events.py` + `/api/events` |
+| Gradient Boosting Regressor, `n_estimators=50, max_depth=3`, lag-1/2/3 + MA₃ + MA₇ | ✅ `analytics.py::_gb_forecast` — parameters match exactly |
+| Falls back to exponential smoothing below 7 data points | ✅ `_gb_forecast` guard |
+| Isolation Forest, `n_estimators=100, contamination=0.05`, 500 recent transactions | ✅ `analytics.py::detect_scan_anomalies` — parameters match exactly |
+| Features: hour-of-day, weekday, \|Δquantity\|, inter-scan gap | ✅ Exactly these four |
+| EOQ from ML-predicted demand, S = RM 10, H = 0.5 | ✅ `REORDER_COST = 10.0`, `HOLDING_COST = 0.5` |
+| Hardware cost under RM 300 | ✅ 4× ESP32 + 4× RC522 + tags |
+| **"LLM Assistant" in the Figure 1 architecture** | ❌ **Does not exist in the codebase** |
+
+---
+
+## Specification Gaps to Close
+
+Ordered by what a reviewer or examiner is most likely to notice.
+
+### 1. The LLM Assistant claimed in UEC v2 does not exist
+
+Figure 1's caption reads *"Flask backend (AI Analytics + LLM Assistant)"*. There is no LLM,
+chatbot, or assistant code anywhere in `backend/` — a search for `anthropic`, `openai`, `llm`,
+`chatbot`, and `assistant` returns nothing. **Either build it or remove it from the figure
+before submission.** Presenting an unimplemented component in an architecture diagram is the
+single highest-risk item in the current package.
+
+If building it, the natural shape given the existing code: a `/api/assistant` endpoint that
+answers natural-language questions over `items`, `transactions`, and `alerts` — the data is
+already structured and the dashboard already has a modal pattern to host it.
+
+### 2. Analytics are blind to pipeline traffic
+
+The abstract states the Gradient Boosting model is *"trained on 30-day dispatch history"*, but
+`_get_daily_usage` filters `action = 'scan_out'` — a **legacy** action the pipeline never emits.
+Real dispatches are recorded as `warehouse_dispatch`. The same applies to `get_transaction_trends`
+(`scan_in`/`scan_out`) and `get_abc_analysis`.
+
+As written, the forecast trains on an empty series and silently falls back to exponential
+smoothing — the opposite of the paper's central claim. `detect_scan_anomalies` is unaffected
+(it reads all transactions). **This is a one-line-per-query fix and should be done first.**
+
+### 3. Node count and test scope
+
+v2 claims four ESP32 nodes; the Key Results section says testing used *"three live ESP32
+boards"*. Only the rack-reader `main.py` (esp32-04) is in the repository — the multi-role
+firmware for boards 1–3 is not committed. Either commit it or state the board count
+consistently in both the abstract and the report.
+
+### 4. Affiliation inconsistency in v2
+
+The author block says *Faculty of Information Science and Technology, Melaka*; the
+Acknowledgment still thanks the *Faculty of Engineering and Technology*. Pick one.
+
+### 5. Unimplemented or half-wired features
+
+| Feature | State |
+|---------|-------|
+| Stock reservation (`reserved_qty`) | Endpoints exist, never consumed by dispatch, no UI calls them |
+| Pallet `factory_exit` | Routed to the carton handler, which looks pallets up in `cartons` and aborts |
+| Purchase-order receipt | Increments by 1 even for an N-unit carton; no supplier, cost, or expected date |
+| Return desk (`inventory/returns/gate`) | Backend handler complete; no hardware station built |
+| Worker zones | Recorded on the session, never used to reject a scan |
+
+See [Functional gaps](#functional-gaps) for the full list.
 
 ---
 

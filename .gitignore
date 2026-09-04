@@ -38,3 +38,15 @@ desktop.ini
 # Secrets / local config overrides
 config_local.py
 .env
+
+# ── Bundled assets (kept in the folder for offline/portable use, never committed) ──
+# GitHub rejects files over 100 MB; docs/ and firmware/ hold multi-hundred-MB artefacts.
+tools/esptoolenv/
+tools/*/Scripts/
+firmware/*.bin
+docs/report/
+docs/media/
+docs/prism/
+docs/ieee/
+docs/uec/
+docs/figures/

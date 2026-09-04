@@ -40,14 +40,27 @@ smart-inventory-rfid-iot/
 │   ├── rfid_reader.py       RFIDReader.read_tag() / write_item_id()
 │   ├── mfrc522.py           Low-level MFRC522 driver (MicroPython)
 │   └── tag_writer.py        Interactive REPL utility for writing item IDs / worker badges
+├── firmware/                MicroPython image for reflashing (gitignored, zip-only)
+├── tools/esptoolenv/        venv for esptool + mpremote — MUST be rebuilt per machine
+├── docs/                    Academic deliverables, ~830 MB, all gitignored (zip-only)
+│   ├── uec/                 UEC abstract v1/v2 + poster
+│   ├── prism/               PRISM 2026 poster
+│   ├── ieee/                IEEE technical paper
+│   ├── report/              FYP2 report, presentation, submission forms
+│   ├── media/               Demo video, use-case diagram
+│   └── figures/             Figure exports
 ├── mosquitto.conf           listener 1883, allow_anonymous true
 ├── start.ps1 / start.bat    Windows one-click: broker + deps + backend + browser
 ├── requirements-pc.txt      flask, paho-mqtt, scikit-learn, numpy
 ├── requirements-test.txt    pytest, pytest-cov, flask, paho-mqtt, werkzeug
 ├── pytest.ini               testpaths=backend/tests, pythonpath=backend
-├── README.md                User-facing setup + feature documentation
+├── README.md                User-facing setup + onboarding + feature documentation
 └── reference.md             Report-oriented reference (maps to FYP thesis chapters)
 ```
+
+**Git tracks only source, tests, and docs (~1.4 MB).** `docs/`, `firmware/*.bin`,
+`tools/esptoolenv/`, and `backend/inventory.db` are gitignored and travel by zip. Never
+`git add -f` them — GitHub rejects files over 100 MB and `docs/report/` contains a 349 MB pptx.
 
 ---
 
@@ -234,7 +247,30 @@ notes; the ones most likely to matter first:
 
 ---
 
-## 10. Working preferences for this repo
+## 10. Academic context — what the paper claims
+
+The UEC v2 abstract (`docs/uec/UEC_Abstract_FYP_v2.docx`) is the current submission and makes
+specific, checkable claims about this codebase. Verified: the GBR hyperparameters
+(`n_estimators=50, max_depth=3`), Isolation Forest settings (`n_estimators=100,
+contamination=0.05`, 500 transactions, 4 features), EOQ constants (S=10, H=0.5), WAL mode, SSE,
+and the five-stage state machine **all match the code exactly**. Keep them in sync — changing a
+hyperparameter in `analytics.py` invalidates a published equation.
+
+Two claims do not hold, and are the priority work items:
+
+1. **"LLM Assistant"** appears in the Figure 1 architecture caption. No such code exists.
+   Build it or remove it from the figure.
+2. **Gradient Boosting "trained on 30-day dispatch history"** — `_get_daily_usage` filters
+   `action = 'scan_out'`, which the pipeline never emits (it writes `warehouse_dispatch`), so
+   the model trains on an empty series and always falls back to exponential smoothing. Same
+   flaw in `get_transaction_trends` and `get_abc_analysis`.
+
+Full deltas between abstract v1 and v2, and the complete claim-vs-code table, are in the
+README's *Academic Deliverables* and *Specification Gaps to Close* sections.
+
+---
+
+## 11. Working preferences for this repo
 
 - Commit and push after every completed task (repo: `origin` → `jhjh1214/smart-inventory-rfid-iot`,
   branch `main`).

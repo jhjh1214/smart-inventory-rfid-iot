@@ -1,0 +1,8 @@
+# ESP32 toolchain — rebuild per machine, never copy between devices.
+#   python -m venv tools/esptoolenv
+#   tools/esptoolenv/Scripts/python -m pip install -r tools/requirements-esp32.txt
+#
+# Only the two tools the README actually drives. rshell was dropped: its
+# pyreadline dependency uses collections.Callable, removed in Python 3.10.
+esptool>=4.7
+mpremote>=1.22

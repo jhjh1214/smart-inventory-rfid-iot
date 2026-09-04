@@ -49,7 +49,7 @@ live inside it. Zip it, copy it to the new machine, unzip, and work through this
 | Software | Why | Notes |
 |----------|-----|-------|
 | **Python 3.11+** | Backend and tooling | Tested on 3.14.2. Tick *Add Python to PATH* during install. |
-| **Mosquitto** | MQTT broker | From [mosquitto.org/download](https://mosquitto.org/download/). `start.ps1` expects `C:\Program Files (x86)\Mosquitto\mosquitto.exe` — edit `$MOSQUITTO` at the top of that file if it lands elsewhere. |
+| **Mosquitto** | MQTT broker | `winget install EclipseFoundation.Mosquitto`, or [mosquitto.org/download](https://mosquitto.org/download/). `start.ps1` probes `C:\Program Files\mosquitto\` (x64) and `C:\Program Files (x86)\Mosquitto\` (x86), then PATH. **The winget package also registers an auto-starting service** — see step 2b. |
 | **Git** | Version control | Optional if you only ever work from the zip, but the repo remote is `github.com/jhjh1214/smart-inventory-rfid-iot`. |
 | **CP210x / CH340 USB driver** | ESP32 serial | Usually auto-installs on Windows 11. If no COM port appears, install the driver for your board's USB chip. |
 
@@ -58,25 +58,47 @@ live inside it. Zip it, copy it to the new machine, unzip, and work through this
 **1. Unzip somewhere without spaces or OneDrive sync**, e.g. `C:\dev\smart-inventory-rfid-iot`.
 OneDrive can lock `inventory.db` mid-write and corrupt WAL journals.
 
-**2. Install the Python dependencies.**
+**2. Install the Python dependencies into a project venv.** `start.bat` does this for you on
+first run; do it by hand only if you want the test dependencies too. Install into `.venv`, not
+the system interpreter, so a second Python project cannot break these pins.
 
 ```powershell
 cd C:\dev\smart-inventory-rfid-iot
-pip install -r requirements-pc.txt
-pip install -r requirements-test.txt     # optional, for the test suite
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-pc.txt
+.venv\Scripts\python -m pip install -r requirements-test.txt   # optional, for the test suite
 ```
 
-**3. Recreate the ESP32 toolchain venv.** `tools/esptoolenv/` ships in the zip for reference,
-but **a moved virtualenv does not work** — its `pyvenv.cfg` hardcodes the absolute Python path
-and its own location from the old machine. Delete it and rebuild:
+**2b. Stop the Mosquitto service if winget installed one.** The winget package registers
+`mosquitto` as an **auto-starting Windows service** whose config file is empty. Mosquitto 2.x
+with no config binds `127.0.0.1` only, so the backend works but **every ESP32 gets "connection
+refused"**. This repo's `mosquitto.conf` (`listener 1883`, `allow_anonymous true`) binds all
+interfaces, and `start.ps1` launches the broker with it — so the service must get out of the way.
+Run elevated:
 
 ```powershell
-Remove-Item tools\esptoolenv -Recurse -Force
-python -m venv tools\esptoolenv
-tools\esptoolenv\Scripts\pip install esptool mpremote
+Stop-Service mosquitto
+Set-Service mosquitto -StartupType Manual
 ```
 
-Everything the venv provides is two `pip install`s — nothing is lost by rebuilding it.
+Leaving the service running also makes `start.ps1` fail at *"Stopping existing Mosquitto"* with
+*Access denied*, because a service runs in session 0 where an unelevated `Stop-Process` cannot
+touch it.
+
+**3. Build the ESP32 toolchain venv.** `tools/esptoolenv/` is **not** shipped — a copied
+virtualenv does not work, because its `pyvenv.cfg` hardcodes the absolute Python path and its own
+location from the machine that built it. Build it fresh from the pinned requirements:
+
+```powershell
+python -m venv tools\esptoolenv
+tools\esptoolenv\Scripts\python -m pip install -r tools\requirements-esp32.txt
+```
+
+Verify with `tools\esptoolenv\Scripts\esptool version` and `...\mpremote version`.
+
+> `rshell` is deliberately not in that list: its `pyreadline` dependency calls
+> `collections.Callable`, removed in Python 3.10, so it crashes on any modern interpreter.
+> Nothing in this project uses it.
 
 **4. Set a session signing key.** Without this, every install shares the same hardcoded
 fallback key and sessions are forgeable.
@@ -114,12 +136,23 @@ Boards silently fail to reach the backend if you skip this. `boot.py` tries each
 order and adopts the broker IP of whichever one connects — that is what makes the boards work
 across home Wi-Fi, campus Wi-Fi, and a phone hotspot without reflashing.
 
-**8. Open the Windows firewall** for inbound TCP **1883** (Mosquitto) and **5000** (Flask) on
-the *Private* profile. Without this the boards and other machines cannot reach the server.
+**8. Open the Windows firewall** for inbound TCP **1883** (Mosquitto) and **5000** (Flask).
+Without this the boards and other machines cannot reach the server.
+
+**Check the adapter's network category first** — a rule scoped to `Private` does nothing while
+Windows classifies your Wi-Fi as `Public`, which is the default on a network you have not marked
+as trusted:
 
 ```powershell
-New-NetFirewallRule -DisplayName "Mosquitto 1883" -Direction Inbound -Protocol TCP -LocalPort 1883 -Profile Private -Action Allow
-New-NetFirewallRule -DisplayName "Inventory 5000" -Direction Inbound -Protocol TCP -LocalPort 5000 -Profile Private -Action Allow
+Get-NetConnectionProfile | Select-Object InterfaceAlias, NetworkCategory
+```
+
+If it says `Public`, reclassify it (elevated) before adding the rules:
+
+```powershell
+Set-NetConnectionProfile -InterfaceAlias "Wi-Fi" -NetworkCategory Private
+New-NetFirewallRule -DisplayName "Smart Inventory - Mosquitto MQTT (1883)" -Direction Inbound -Protocol TCP -LocalPort 1883 -Profile Private -Action Allow
+New-NetFirewallRule -DisplayName "Smart Inventory - Flask dashboard (5000)" -Direction Inbound -Protocol TCP -LocalPort 5000 -Profile Private -Action Allow
 ```
 
 **9. Launch.**
@@ -138,7 +171,7 @@ the dashboard, and prints the host's LAN IPs.
 - Power on one ESP32; within 30 s `/api/status` shows a recent `device_last_seen`.
 - Scan one tag — the Overview tab's live feed updates within a second, and a row appears in
   the Audit Trail.
-- `python -m pytest -q` → 377 passed, 10 failed ([expected](#testing)).
+- `.venv\Scripts\python -m pytest -q` → 389 passed, 0 failed ([expected](#testing)).
 
 ### Reflashing a board from scratch
 
@@ -607,7 +640,7 @@ smart-inventory-rfid-iot/
 │   ├── static/
 │   │   ├── css/style.css       Sidebar, skeleton loaders, toasts, modals
 │   │   └── js/dashboard.js     Tabs, Chart.js, SSE, RBAC gating, all CRUD
-│   └── tests/                  pytest suite — 387 tests across 13 modules
+│   └── tests/                  pytest suite — 389 tests across 13 modules
 │
 ├── esp32/
 │   ├── config.py               Per-board: DEVICE_ID, READERS, Wi-Fi list, broker, topics
@@ -949,24 +982,33 @@ Follow the prompts to write `EMP-001` … `EMP-004` (and item IDs) to physical t
 ## Testing
 
 ```bash
-pip install -r requirements-test.txt
-python -m pytest -q                 # ~3.5 minutes
+.venv\Scripts\python -m pip install -r requirements-test.txt
+.venv\Scripts\python -m pytest -q   # ~3.8 minutes
 ```
 
-387 tests across 13 modules cover auth and RBAC, item CRUD, tags, workers and sessions, alerts,
+389 tests across 13 modules cover auth and RBAC, item CRUD, tags, workers and sessions, alerts,
 audit filters, purchase orders, webhooks, CSV export/import, analytics, database migrations and
 seeding, and every pipeline handler (factory write/exit, warehouse gate/rack, returns, legacy
-scan, worker badge routing). Each test runs against an isolated temporary SQLite file.
+scan, worker badge routing). Each test runs against an isolated temporary SQLite file, and the
+suite makes no network calls.
 
-**Current status: 377 passed, 10 failed.** All ten failures are stale assertions or
-environment dependence rather than product regressions:
+**Current status: 389 passed, 0 failed.** Ten tests were previously failing on stale assertions
+or network dependence; all ten were fixed **in the tests only**, with no product code changed:
 
-| Failing test(s) | Cause |
+| Was failing | How it was fixed |
 |---|---|
-| `TestIdempotency::test_migrations_*` (2) | Assert 10 rows in `schema_version`; there are now 14 migrations. |
-| `TestHandleWarehouseRack::*` (5) | Call the handler without `item_id`, which it now requires. |
-| `test_unknown_tag_with_item_id_auto_creates` | Asserts auto-creation at factory exit; behaviour intentionally changed to raise a security alert instead. |
-| `TestTestWebhook::*` (2) | Post to `http://example.com/hook` over the real internet (returns 405). Needs mocking. |
+| `TestIdempotency::test_migrations_*` (2) | Asserted 10 rows in `schema_version`; there are 14 migrations. Now assert the shape — versions contiguous from 1, and a second `init_db()` adds no rows — so appending a migration cannot re-break them. |
+| `TestHandleWarehouseRack::*` (5) | Called the handler without `item_id`, which it requires. The payloads now include it, as the firmware does. |
+| `test_unknown_tag_with_item_id_auto_creates` | Renamed `test_unregistered_tag_raises_security_alert`; asserts the current behaviour — alert raised, no tag row created. |
+| `TestTestWebhook::*` (2) | Posted to `http://example.com/hook` over the real internet. A fixture now stubs `urllib.request.urlopen` and asserts the delivered URL and method. |
+
+Two further tests were **passing for the wrong reason** — both omitted `item_id`, so the handler
+returned early and the assertion never ran. `test_invalid_state_tag_unchanged` seeded a `tagged`
+tag, which is a *valid* rack state, and now uses `consumed`; `test_unknown_tag_does_nothing`
+split into `test_payload_without_item_id_is_ignored` and a new
+`test_unknown_tag_is_standalone_rack_add` covering the `rack_add` (+1) path. Both new
+load-bearing assertions were mutation-tested — removing the `item_id` guard, and restoring the
+old auto-create behaviour, each turn their test red.
 
 ---
 
@@ -1150,5 +1192,5 @@ it matters before the system touches real stock or an untrusted network.
 | Real-time push | Server-Sent Events (SSE) |
 | Frontend | Tailwind CSS (CDN), Chart.js v4, jsPDF + autoTable, vanilla JS — no build step |
 | Auth | Flask sessions, Werkzeug PBKDF2-SHA256 |
-| Testing | pytest, pytest-cov — 387 tests |
+| Testing | pytest, pytest-cov — 389 tests |
 | Deployment | On-premise: Gunicorn (1 worker, threaded) + systemd + LAN; Cloud: Railway / Render + managed PostgreSQL + cloud MQTT |

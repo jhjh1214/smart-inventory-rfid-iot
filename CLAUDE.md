@@ -32,7 +32,7 @@ smart-inventory-rfid-iot/
 │   ├── inventory.db         Runtime DB — gitignored, created on first run
 │   ├── templates/           login.html, dashboard.html (8-tab SPA shell)
 │   ├── static/css|js/       style.css, dashboard.js (all frontend logic, no build step)
-│   └── tests/               pytest suite, 387 tests
+│   └── tests/               pytest suite, 389 tests
 ├── esp32/
 │   ├── config.py            PER-BOARD config: DEVICE_ID, READERS, Wi-Fi, broker, topics
 │   ├── boot.py              Wi-Fi bring-up, selects broker IP from the matched network
@@ -41,7 +41,9 @@ smart-inventory-rfid-iot/
 │   ├── mfrc522.py           Low-level MFRC522 driver (MicroPython)
 │   └── tag_writer.py        Interactive REPL utility for writing item IDs / worker badges
 ├── firmware/                MicroPython image for reflashing (gitignored, zip-only)
-├── tools/esptoolenv/        venv for esptool + mpremote — MUST be rebuilt per machine
+├── tools/
+│   ├── requirements-esp32.txt  esptool + mpremote pins for the toolchain venv
+│   └── esptoolenv/          venv for esptool + mpremote — MUST be rebuilt per machine
 ├── docs/                    Academic deliverables, ~830 MB, all gitignored (zip-only)
 │   ├── uec/                 UEC abstract v1/v2 + poster
 │   ├── prism/               PRISM 2026 poster
@@ -67,19 +69,26 @@ smart-inventory-rfid-iot/
 ## 3. Running it on a new device
 
 ```powershell
-# 1. Python 3.9+ and Mosquitto installed (default path C:\Program Files (x86)\Mosquitto)
-pip install -r requirements-pc.txt
+# 1. Python 3.9+ and Mosquitto installed.
+#    winget install EclipseFoundation.Mosquitto  → C:\Program Files\mosquitto
+#    Older/32-bit installs land in C:\Program Files (x86)\Mosquitto; start.ps1 probes both.
+#    The winget package registers an auto-starting SERVICE with an empty config that binds
+#    127.0.0.1 only — LAN clients get "connection refused". Stop it so start.ps1's broker
+#    (which loads this repo's mosquitto.conf) owns port 1883:
+#        Stop-Service mosquitto; Set-Service mosquitto -StartupType Manual   # elevated
 
-# 2. One-click: starts broker, installs deps, launches backend, opens dashboard
+# 2. One-click: creates .venv, installs deps into it, starts broker + backend, opens dashboard
 .\start.bat
 
 # — or manually —
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-pc.txt
 mosquitto -c mosquitto.conf
-cd backend; python app.py          # http://localhost:5000
+cd backend; ..\.venv\Scripts\python app.py    # http://localhost:5000
 
 # 3. Tests
-pip install -r requirements-test.txt
-python -m pytest -q                # takes ~3.5 min
+.venv\Scripts\python -m pip install -r requirements-test.txt
+.venv\Scripts\python -m pytest -q             # takes ~3.8 min
 ```
 
 **Environment variables** (all optional, all read at import time):
@@ -195,17 +204,26 @@ A carton scan moves `unit_count` units; a pallet scan moves every carton on it, 
 
 ## 7. Known state of the test suite
 
-`python -m pytest` → **377 passed, 10 failed** as of the last audit. All ten failures are
-**stale tests or environment dependence, not product regressions**:
+`python -m pytest` → **389 passed, 0 failed** (~3.8 min). The ten stale failures recorded in
+earlier audits were fixed **in the tests only** — no product code changed:
 
-| Failing test(s) | Cause |
+| Was failing | How it was fixed |
 |---|---|
-| `test_database.py::TestIdempotency::test_migrations_*` (2) | Assert `schema_version` count is 10; there are now 14 migrations. |
-| `test_pipeline.py::TestHandleWarehouseRack::*` (5) | Call `_handle_warehouse_rack` without `item_id`; the handler now requires it and returns early. |
-| `test_pipeline.py::test_unknown_tag_with_item_id_auto_creates` | Asserts an unregistered tag at factory exit auto-creates. Behaviour intentionally changed to "raise a security alert, create nothing". |
-| `test_webhooks.py::TestTestWebhook::*` (2) | Hit `http://example.com/hook` over the real internet; the endpoint returns 405. Needs mocking. |
+| `test_database.py::TestIdempotency::test_migrations_*` (2) | Hardcoded `schema_version` count of 10. Now assert the *shape* — versions contiguous from 1, and a second `init_db()` does not add rows — so appending a migration can never re-break them. |
+| `test_pipeline.py::TestHandleWarehouseRack::*` (5) | Payloads omitted `item_id`, which the handler requires. Added it, as the firmware sends it. |
+| `test_pipeline.py::test_unknown_tag_with_item_id_auto_creates` | Renamed to `test_unregistered_tag_raises_security_alert` and now asserts the real behaviour: security alert raised, no tag row created. |
+| `test_webhooks.py::TestTestWebhook::*` (2) | Reached `http://example.com/hook` over the internet. A `sent_webhooks` fixture now stubs `urllib.request.urlopen` and asserts the delivered URL and method. |
 
-Do not "fix the code" to make these pass — fix the tests, and only when asked.
+Two tests were **passing for the wrong reason** and were also corrected: both omitted `item_id`,
+so the handler returned early and the assertion was vacuous.
+`test_invalid_state_tag_unchanged` seeded a `tagged` tag — a *valid* rack state — and now uses
+`consumed`; `test_unknown_tag_does_nothing` became `test_payload_without_item_id_is_ignored`
+plus a new `test_unknown_tag_is_standalone_rack_add` covering the `rack_add` (+1) path from §4.
+
+Both of the load-bearing new assertions were mutation-tested: removing the `item_id` guard and
+restoring the old auto-create behaviour each turn their test red.
+
+Do not "fix the code" to make a test pass — fix the test, and only when asked.
 
 ---
 

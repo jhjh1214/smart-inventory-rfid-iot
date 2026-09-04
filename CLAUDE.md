@@ -30,7 +30,7 @@ smart-inventory-rfid-iot/
 │   ├── analytics.py         Forecasting, EOQ, ABC, anomaly detection, pipeline summary
 │   ├── events.py            In-process SSE fan-out bus (queue per browser client)
 │   ├── inventory.db         Runtime DB — gitignored, created on first run
-│   ├── templates/           login.html, dashboard.html (8-tab SPA shell)
+│   ├── templates/           login.html, dashboard.html (9-tab SPA shell)
 │   ├── static/css|js/       style.css, dashboard.js (all frontend logic, no build step)
 │   └── tests/               pytest suite, 389 tests
 ├── esp32/
@@ -289,7 +289,20 @@ Two claims do not hold, and are the priority work items:
    pipeline state, and a test asserts every tool leaves the database byte-identical.
    `@login_required` only, because read-only access matches what a viewer already sees.
 
-   **Still open:** no dashboard UI hosts it. The endpoint works; there is no Assistant tab.
+   The dashboard's **Assistant** tab hosts it (`initAssistant` in `dashboard.js`). Answers
+   render as escaped plain text with `white-space: pre-wrap` - no markdown parsing - so
+   invariant 6 holds against model output too. `tools/ui_check.mjs` exercises the tab in
+   jsdom, including an XSS payload returned as a model answer; it is optional and separate
+   from the pytest suite (`npm install jsdom` first).
+
+   Verified end to end against the live Gemini API: `list_inventory` and
+   `get_demand_forecast` are called for real and the answers match the REST endpoints.
+
+   Model is pinned (`gemini-3.6-flash`) rather than tracking `gemini-flash-latest`, so
+   answers do not drift between demo runs. `gemini-2.5-flash` now 404s for new API keys.
+   Transient 503s retry via the SDK's backoff; 429 quota hits do not retry (the free
+   tier's quota is per-minute) and surface as a distinct `AssistantRateLimited` -> HTTP
+   429 so a demo can tell a quota pause from a real failure.
 2. ~~**Gradient Boosting "trained on 30-day dispatch history"**~~ — **fixed.** The three
    queries now read `warehouse_dispatch` / `warehouse_receive` instead of the legacy
    `scan_in` / `scan_out`, and the 30-day demand series is zero-filled so the lag and

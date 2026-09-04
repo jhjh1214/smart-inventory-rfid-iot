@@ -500,6 +500,7 @@ Access at `http://<server>:5000` — login required.
 | **Overview** | KPI cards, 7-day transaction trend chart, inventory status and tag-state doughnuts, live scan feed, quick stats |
 | **Inventory** | Item table with search, add / edit / delete, manual quantity adjustment, CSV import & export |
 | **Analytics** | Current stock levels, days-remaining risk chart, per-item forecast / EOQ / risk / anomaly table |
+| **Assistant** | Natural-language questions over inventory, forecasts, the audit trail, alerts and pipeline state; shows which tools answered each question |
 | **RFID Tags** | Rack inventory by location, tag-state reference, all active tags with state, level, rack, last scan; return request and tag reassignment |
 | **Workers** | Live station sessions, worker registry with zone and role, role-access summary, dashboard account management, webhook configuration |
 | **Manufacturing** | Pipeline stage counts, per-item stage breakdown, rack utilisation, carton management, pallet management, purchase orders |
@@ -588,14 +589,30 @@ tool leaves items, transactions, tags and alerts byte-identical.
 layer and one system prompt, so switching changes nothing the dashboard can see
 except answer quality.
 
-| Provider | Value | Key | Cost |
-|----------|-------|-----|------|
-| Gemini (default) | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Free on the AI Studio tier, rate-limited |
-| Claude | `anthropic` | `ANTHROPIC_API_KEY` | ~$0.03-0.06 per question on Opus 5 |
+| Provider | Value | Model | Key | Cost |
+|----------|-------|-------|-----|------|
+| Gemini (default) | `gemini` | `gemini-3.6-flash` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Free on the AI Studio tier, rate-limited |
+| Claude | `anthropic` | `claude-opus-5` | `ANTHROPIC_API_KEY` | ~$0.03-0.06 per question |
+
+Models are pinned, not tracking `gemini-flash-latest`: a moving default would change
+answers between demo runs and invalidate anything the report quotes. Override with
+`GEMINI_MODEL` or `ANTHROPIC_MODEL`. Note that `gemini-2.5-flash` now returns **404 for
+new API keys** — the API itself directs new keys to 3.6.
+
+**Free-tier behaviour.** Transient `503 high demand` responses are retried through the
+SDK's own backoff (3 attempts). A `429` quota hit is **not** retried — the free tier's
+quota is per-minute, so a few seconds of backoff will not clear it and retrying only
+spends more of it. The endpoint returns `429` with a distinct "rate limited, wait a
+moment" message so a demo can tell a quota pause apart from a real failure.
 
 Measured prompt cost: a ~1,016-token fixed prefix (system prompt + five tool
 schemas) plus 133-1,356 tokens per tool result, typically ~3,000 input and ~600
 output tokens per question across two round trips.
+
+**Dashboard tab.** The **Assistant** tab hosts the chat. When no provider is configured it
+shows the exact reason and the two commands that fix it, rather than failing silently.
+Answers render as **escaped plain text** with `white-space: pre-wrap` — no markdown is
+parsed, so nothing the model returns can inject markup (architecture invariant 6).
 
 **Setup.** Both SDKs are optional and guarded, exactly like sklearn in
 `analytics.py` - the backend boots, the dashboard works, and the ESP32 pipeline
@@ -608,9 +625,17 @@ $env:ASSISTANT_PROVIDER = "gemini"
 $env:GEMINI_API_KEY     = "<key from https://aistudio.google.com/apikey>"
 ```
 
+**Verified end to end.** A live Gemini round trip answers correctly and grounded — asked
+which items are low, it calls `list_inventory` and returns the same four items
+`/api/dashboard` reports; asked about `item-006` it calls `get_demand_forecast` and
+correctly explains that 0 demand and 999 days means no dispatch in 30 days rather than
+overstock.
+
 **Security.** `@login_required` only, deliberately: every tool is read-only, so a
 viewer asking a question is exactly as harmless as a viewer reading the
-dashboard. Item names, transaction notes, and alert messages are operator- and
+dashboard. Every endpoint the tools mirror (`/api/items`, `/api/transactions`,
+`/api/alerts`, `/api/analytics`) is `@login_required` too, so the assistant exposes
+nothing a viewer could not already fetch directly. Item names, transaction notes, and alert messages are operator- and
 scanner-supplied, so the system prompt instructs the model to treat tool output
 as data and never as instructions. Provider errors are logged server-side and
 returned to the client as a generic 502 rather than leaking quota or project
@@ -705,7 +730,7 @@ smart-inventory-rfid-iot/
 │   ├── inventory.db            Runtime database (gitignored, auto-created)
 │   ├── templates/
 │   │   ├── login.html
-│   │   └── dashboard.html      Sidebar + 8 tabs + 13 modals
+│   │   └── dashboard.html      Sidebar + 9 tabs + 13 modals
 │   ├── static/
 │   │   ├── css/style.css       Sidebar, skeleton loaders, toasts, modals
 │   │   └── js/dashboard.js     Tabs, Chart.js, SSE, RBAC gating, all CRUD
@@ -1147,9 +1172,8 @@ queries against `items`, `transactions`, `alerts` and the analytics engine. See
 [LLM Assistant](#llm-assistant).
 
 The provider is swappable and defaults to Gemini's free tier, so the claim holds without a
-paid dependency. **Still outstanding:** no dashboard UI hosts it yet — the endpoint is
-reachable but there is no Assistant tab, so a live demo needs one built or must be driven
-from curl.
+paid dependency, and the dashboard's **Assistant** tab hosts it. Verified end to end
+against the live Gemini API.
 
 ### 2. Analytics are blind to pipeline traffic — **fixed**
 

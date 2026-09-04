@@ -297,11 +297,63 @@ class TestAssistantEndpoint:
 
     def test_provider_failure_is_502_without_leaking_detail(self, admin_client, monkeypatch):
         def _boom(question, history=None):
-            raise assistant.AssistantError('quota exceeded for project 12345')
+            raise assistant.AssistantError('database is on fire at 10.0.0.5')
         monkeypatch.setattr(assistant, 'ask', _boom)
         r = admin_client.post('/api/assistant', json={'question': 'hi'})
         assert r.status_code == 502
-        assert '12345' not in r.get_json()['error'], 'must not leak provider internals'
+        assert '10.0.0.5' not in r.get_json()['error'], 'must not leak provider internals'
+
+    def test_rate_limit_is_429_not_502(self, admin_client, monkeypatch):
+        # A free-tier quota hit is recoverable by waiting, so it must be
+        # distinguishable from a real failure.
+        def _boom(question, history=None):
+            raise assistant.AssistantRateLimited('429 RESOURCE_EXHAUSTED project 12345')
+        monkeypatch.setattr(assistant, 'ask', _boom)
+        r = admin_client.post('/api/assistant', json={'question': 'hi'})
+        assert r.status_code == 429
+        body = r.get_json()
+        assert 'rate limited' in body['error'].lower()
+        assert '12345' not in body['error'], 'must not leak provider internals'
+
+
+class TestRateLimitClassification:
+    def test_recognises_provider_quota_errors(self):
+        for msg in ('429 RESOURCE_EXHAUSTED',
+                    'You exceeded your current quota',
+                    'Rate limit reached for requests',
+                    '429 Too Many Requests'):
+            assert assistant._is_rate_limit(msg), msg
+
+    def test_ignores_unrelated_errors(self):
+        for msg in ('404 NOT_FOUND model is no longer available',
+                    'connection reset by peer',
+                    '', None):
+            assert not assistant._is_rate_limit(msg), msg
+
+    def test_ask_wraps_provider_quota_error(self, monkeypatch):
+        import assistant_gemini
+        monkeypatch.setenv('ASSISTANT_PROVIDER', 'gemini')
+        monkeypatch.setattr(assistant_gemini, 'is_available', lambda: True)
+
+        def _boom(question, history=None):
+            raise RuntimeError('429 RESOURCE_EXHAUSTED')
+        monkeypatch.setattr(assistant_gemini, 'ask', _boom)
+
+        with pytest.raises(assistant.AssistantRateLimited):
+            assistant.ask('anything')
+
+    def test_ask_leaves_other_errors_generic(self, monkeypatch):
+        import assistant_gemini
+        monkeypatch.setenv('ASSISTANT_PROVIDER', 'gemini')
+        monkeypatch.setattr(assistant_gemini, 'is_available', lambda: True)
+
+        def _boom(question, history=None):
+            raise RuntimeError('404 NOT_FOUND')
+        monkeypatch.setattr(assistant_gemini, 'ask', _boom)
+
+        with pytest.raises(assistant.AssistantError) as exc:
+            assistant.ask('anything')
+        assert not isinstance(exc.value, assistant.AssistantRateLimited)
 
 
 # ── SDK contract ──────────────────────────────────────────────────────────────

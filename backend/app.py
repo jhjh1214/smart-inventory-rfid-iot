@@ -1486,6 +1486,10 @@ def assistant_ask():
         return jsonify({'error': str(e)}), 400
     except assistant.AssistantUnavailable as e:
         return jsonify({'error': 'Assistant not configured: %s' % e}), 503
+    except assistant.AssistantRateLimited as e:
+        print('[Assistant] rate limited: %s' % e)
+        return jsonify({'error': 'The assistant is rate limited right now. '
+                                 'Wait a moment and ask again.'}), 429
     except assistant.AssistantError as e:
         print('[Assistant] %s' % e)
         return jsonify({'error': 'The assistant could not answer right now.'}), 502

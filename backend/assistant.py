@@ -41,6 +41,23 @@ class AssistantError(RuntimeError):
     """The assistant ran but the provider call failed."""
 
 
+class AssistantRateLimited(AssistantError):
+    """The provider refused the call because a quota or rate limit was hit."""
+
+
+# Matched against the provider's error text. Both SDKs raise their own
+# exception types with the HTTP status in the message, and neither exposes a
+# shared base class, so this stays a deliberate heuristic: a missed match
+# degrades to a generic error, never to a wrong answer.
+_RATE_LIMIT_MARKERS = ('429', 'resource_exhausted', 'rate limit',
+                       'rate_limit', 'quota', 'too many requests')
+
+
+def _is_rate_limit(message):
+    low = (message or '').lower()
+    return any(m in low for m in _RATE_LIMIT_MARKERS)
+
+
 def provider_name():
     return (os.environ.get('ASSISTANT_PROVIDER') or DEFAULT_PROVIDER).strip().lower()
 
@@ -96,4 +113,6 @@ def ask(question, history=None):
     try:
         return mod.ask(question, history)
     except Exception as e:
+        if _is_rate_limit(str(e)):
+            raise AssistantRateLimited(str(e))
         raise AssistantError(str(e))

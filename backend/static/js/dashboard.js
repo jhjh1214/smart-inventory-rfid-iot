@@ -12,8 +12,8 @@
   btn.classList.add('active');
   pane.classList.add('active');
   const titles = { overview:'Overview', inventory:'Inventory', analytics:'Analytics',
-    tags:'RFID Tags', workers:'Workers', manufacturing:'Manufacturing', alerts:'Alerts',
-    audit:'Audit Trail' };
+    assistant:'Assistant', tags:'RFID Tags', workers:'Workers',
+    manufacturing:'Manufacturing', alerts:'Alerts', audit:'Audit Trail' };
   const h = document.getElementById('page-title');
   if (h) h.textContent = titles[t] || t;
 })();
@@ -86,6 +86,8 @@ let _auditFilter  = 'all';
       fetchPipeline(); fetchPurchaseOrders(''); fetchCartons(); fetchPallets();
     } else if (savedTab === 'audit') {
       fetchAudit();
+    } else if (savedTab === 'assistant') {
+      initAssistant();
     }
   }
 
@@ -345,8 +347,8 @@ function clockTick() {
 function setupTabs() {
   const titles = {
     overview:'Overview', inventory:'Inventory', analytics:'Analytics',
-    tags:'RFID Tags', workers:'Workers', manufacturing:'Manufacturing',
-    alerts:'Alerts', audit:'Audit Trail'
+    assistant:'Assistant', tags:'RFID Tags', workers:'Workers',
+    manufacturing:'Manufacturing', alerts:'Alerts', audit:'Audit Trail'
   };
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -360,6 +362,7 @@ function setupTabs() {
 
       if (tab === 'inventory')     fetchItems();
       if (tab === 'analytics')     fetchAnalytics();
+      if (tab === 'assistant')     initAssistant();
       if (tab === 'tags')          { fetchTags(); fetchRackInventory(); }
       if (tab === 'alerts')        fetchAlerts();
       if (tab === 'workers')       { fetchWorkers(); fetchUsers(); fetchWebhooks(); }
@@ -2364,3 +2367,197 @@ async function removeCartonFromPallet(palletId, cartonId) {
 // ── Init overview charts ──────────────────────────────────────────────────────
 fetchTransactionTrends();
 setInterval(fetchTransactionTrends, 60000);
+
+
+// ── Assistant ─────────────────────────────────────────────────────────────────
+// Chat over /api/assistant. Answers are rendered as ESCAPED PLAIN TEXT with
+// white-space:pre-wrap - never as HTML. The model's output is untrusted for this
+// purpose, so no markdown is parsed and nothing it returns can inject markup.
+
+let _assistantHistory = [];      // [{role, content}] sent back for follow-ups
+let _assistantReady   = false;
+let _assistantBusy    = false;
+let _assistantInited  = false;
+
+const ASSISTANT_SUGGESTIONS = [
+  'Which items are low on stock?',
+  'Which item will run out first?',
+  'Any security alerts today?',
+  'What is sitting on the racks right now?'
+];
+
+async function initAssistant() {
+  if (!_assistantInited) {
+    _assistantInited = true;
+    const form = document.getElementById('assistant-form');
+    if (form) form.addEventListener('submit', onAssistantSubmit);
+    renderAssistantSuggestions();
+    renderAssistantLog();
+  }
+  await fetchAssistantStatus();
+}
+
+async function fetchAssistantStatus() {
+  const pill  = document.getElementById('assistant-provider');
+  const setup = document.getElementById('assistant-setup');
+  if (!pill || !setup) return;
+
+  try {
+    const st = await fetch('/api/assistant').then(r => r.json());
+    _assistantReady = !!st.available;
+
+    pill.textContent = _assistantReady
+      ? `${st.provider} · ready`
+      : `${st.provider} · not configured`;
+    pill.className = 'badge ' + (_assistantReady ? 'badge-success' : 'badge-warning');
+
+    if (_assistantReady) {
+      setup.classList.add('hidden');
+      setup.innerHTML = '';
+    } else {
+      setup.classList.remove('hidden');
+      setup.innerHTML = `
+        <p class="assistant-setup-title">Assistant not configured</p>
+        <p class="assistant-setup-body">${esc(st.reason || 'No provider is available.')}</p>
+        <p class="assistant-setup-body">On the machine running the backend:</p>
+        <pre class="assistant-setup-code">.venv\\Scripts\\python -m pip install -r requirements-assistant.txt
+$env:GEMINI_API_KEY = "your-key-from-aistudio.google.com/apikey"</pre>
+        <p class="assistant-setup-body">Then restart the backend and reopen this tab.</p>`;
+    }
+  } catch {
+    _assistantReady = false;
+    pill.textContent = 'unavailable';
+    pill.className = 'badge badge-danger';
+  }
+  updateAssistantControls();
+}
+
+function updateAssistantControls() {
+  const input = document.getElementById('assistant-input');
+  const send  = document.getElementById('assistant-send');
+  const on    = _assistantReady && !_assistantBusy;
+  if (input) {
+    input.disabled = !on;
+    input.placeholder = _assistantReady
+      ? 'Ask about stock, forecasts, alerts or the pipeline…'
+      : 'Assistant is not configured on the server';
+  }
+  if (send) {
+    send.disabled = !on;
+    send.textContent = _assistantBusy ? 'Thinking…' : 'Ask';
+  }
+}
+
+function renderAssistantSuggestions() {
+  const box = document.getElementById('assistant-suggestions');
+  if (!box) return;
+  box.innerHTML = ASSISTANT_SUGGESTIONS.map(q =>
+    `<button type="button" class="assistant-chip" data-q="${esc(q)}">${esc(q)}</button>`
+  ).join('');
+  box.querySelectorAll('.assistant-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById('assistant-input');
+      if (!input || input.disabled) return;
+      input.value = btn.dataset.q;
+      input.focus();
+    });
+  });
+}
+
+function renderAssistantLog() {
+  const log = document.getElementById('assistant-log');
+  if (!log) return;
+
+  if (!_assistantHistory.length && !_assistantBusy) {
+    log.innerHTML = `<div class="assistant-empty">
+        <p class="assistant-empty-title">Nothing asked yet</p>
+        <p class="assistant-empty-body">Try one of the suggestions below, or ask your own question.</p>
+      </div>`;
+    return;
+  }
+
+  let html = _assistantHistory.map(turn => {
+    if (turn.role === 'user') {
+      return `<div class="assistant-turn assistant-turn-user">
+                <div class="assistant-bubble assistant-bubble-user">${esc(turn.content)}</div>
+              </div>`;
+    }
+    const tools = (turn.tools || []).length
+      ? `<div class="assistant-tools">${turn.tools.map(t =>
+           `<span class="assistant-tool">${esc(t)}</span>`).join('')}</div>`
+      : '';
+    return `<div class="assistant-turn assistant-turn-bot">
+              <div class="assistant-bubble assistant-bubble-bot">${esc(turn.content)}</div>
+              ${tools}
+            </div>`;
+  }).join('');
+
+  if (_assistantBusy) {
+    html += `<div class="assistant-turn assistant-turn-bot">
+               <div class="assistant-bubble assistant-bubble-bot assistant-thinking">
+                 <span class="assistant-dot"></span><span class="assistant-dot"></span><span class="assistant-dot"></span>
+               </div>
+             </div>`;
+  }
+
+  log.innerHTML = html;
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearAssistantChat() {
+  _assistantHistory = [];
+  renderAssistantLog();
+}
+
+async function onAssistantSubmit(e) {
+  e.preventDefault();
+  const input = document.getElementById('assistant-input');
+  if (!input) return;
+  const question = input.value.trim();
+  if (!question || _assistantBusy || !_assistantReady) return;
+
+  // Only completed turns go back as history; the pending question is sent
+  // separately so a failed call never leaves a dangling user turn in context.
+  const history = _assistantHistory.map(t => ({ role: t.role, content: t.content }));
+
+  input.value = '';
+  _assistantHistory.push({ role: 'user', content: question });
+  _assistantBusy = true;
+  updateAssistantControls();
+  renderAssistantLog();
+
+  try {
+    const r = await fetch('/api/assistant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, history })
+    });
+    const data = await r.json().catch(() => ({}));
+
+    if (!r.ok) {
+      _assistantHistory.pop();                     // drop the unanswered question
+      if (r.status === 503) {
+        showToast('Assistant is not configured on the server', 'warning');
+        await fetchAssistantStatus();
+      } else if (r.status === 429) {
+        showToast('Rate limited — wait a moment and ask again', 'warning', 5000);
+      } else {
+        showToast(data.error || 'The assistant could not answer', 'error');
+      }
+      return;
+    }
+
+    _assistantHistory.push({
+      role: 'assistant',
+      content: data.answer || '(no answer)',
+      tools: data.tools_used || []
+    });
+  } catch {
+    _assistantHistory.pop();
+    showToast('Could not reach the assistant', 'error');
+  } finally {
+    _assistantBusy = false;
+    updateAssistantControls();
+    renderAssistantLog();
+  }
+}

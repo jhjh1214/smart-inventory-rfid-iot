@@ -50,6 +50,13 @@
         </svg>
         <span>Analytics</span>
       </button>
+      <button class="nav-item" data-tab="assistant">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.9 9.9 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+        </svg>
+        <span>Assistant</span>
+      </button>
       <button class="nav-item" data-tab="tags">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -410,6 +417,35 @@
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Assistant ──────────────────────────────────────────────── -->
+    <div id="tab-assistant" class="tab-content p-6 space-y-4">
+      <div class="card">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h2 class="card-title">Ask the Assistant</h2>
+          <div class="flex items-center gap-2 flex-wrap">
+            <span id="assistant-provider" class="badge badge-neutral">checking…</span>
+            <button onclick="clearAssistantChat()" class="btn-sm btn-sm-neutral">Clear chat</button>
+          </div>
+        </div>
+
+        <div id="assistant-setup" class="assistant-setup hidden"></div>
+
+        <div id="assistant-log" class="assistant-log" aria-live="polite"></div>
+
+        <div id="assistant-suggestions" class="assistant-suggestions"></div>
+
+        <form id="assistant-form" class="assistant-composer" autocomplete="off">
+          <input id="assistant-input" class="form-input assistant-input" type="text"
+                 maxlength="2000" placeholder="Ask about stock, forecasts, alerts or the pipeline…">
+          <button id="assistant-send" type="submit" class="btn-primary assistant-send">Ask</button>
+        </form>
+        <p class="assistant-footnote">
+          Read-only. The assistant can look up inventory, forecasts, the audit trail,
+          alerts and pipeline state, but cannot change anything.
+        </p>
       </div>
     </div>
 

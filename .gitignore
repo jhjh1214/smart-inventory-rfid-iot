@@ -53,3 +53,8 @@ docs/figures/
 
 # Claude Code local config (machine-specific absolute paths) — travels in the zip
 .claude/
+
+# Node (optional UI check only — see tools/ui_check.mjs)
+node_modules/
+package-lock.json
+package.json

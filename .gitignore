@@ -50,3 +50,6 @@ docs/prism/
 docs/ieee/
 docs/uec/
 docs/figures/
+
+# Claude Code local config (machine-specific absolute paths) — travels in the zip
+.claude/

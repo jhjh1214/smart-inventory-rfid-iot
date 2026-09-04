@@ -4,7 +4,7 @@ from database import get_db
 from analytics import (
     get_item_analytics, get_all_analytics, get_transaction_trends,
     get_abc_analysis, get_inventory_summary, get_pipeline_summary,
-    _exponential_smoothing, _eoq, _risk_score,
+    _exponential_smoothing, _eoq, _risk_score, _get_daily_usage, _recent_transactions,
 )
 
 
@@ -62,18 +62,21 @@ class TestGetItemAnalytics:
         result = get_item_analytics('item-001', 10)
         assert result['item_id'] == 'item-001'
 
-    def test_no_history_defaults(self, test_db):
+    def test_no_history_means_no_demand(self, test_db):
+        # An item that has never been dispatched has zero demand, not the
+        # 1.0/day placeholder the old always-empty series produced.
         result = get_item_analytics('item-001', 5)
-        assert result['avg_daily_usage'] == 1.0
+        assert result['avg_daily_usage'] == 0.0
+        assert result['days_remaining'] == 999.0
 
     def test_with_scan_history(self, test_db):
-        _seed_scan_txn('item-001', 'scan_out', -2, days_ago=1)
+        _seed_scan_txn('item-001', 'warehouse_dispatch', -2, days_ago=1)
         result = get_item_analytics('item-001', 10)
         assert result['avg_daily_usage'] >= 0
 
     def test_daily_history_limited_to_7(self, test_db):
         for i in range(10):
-            _seed_scan_txn('item-001', 'scan_out', -1, days_ago=i)
+            _seed_scan_txn('item-001', 'warehouse_dispatch', -1, days_ago=i)
         result = get_item_analytics('item-001', 5)
         assert len(result['daily_history']) <= 7
 
@@ -115,13 +118,14 @@ class TestGetTransactionTrends:
             assert isinstance(day['received'], int)
             assert isinstance(day['dispatched'], int)
 
-    def test_counts_scan_in_and_out(self, test_db):
+    def test_legacy_scan_actions_are_not_counted(self, test_db):
+        # Trends chart the pipeline's gate actions; the legacy single-reader
+        # toggle must not inflate them.
         _seed_scan_txn('item-001', 'scan_in', 1, days_ago=0)
         _seed_scan_txn('item-001', 'scan_out', -1, days_ago=0)
-        result = get_transaction_trends(1)
-        today = result[-1]
-        assert today['received'] >= 1
-        assert today['dispatched'] >= 1
+        today = get_transaction_trends(1)[-1]
+        assert today['received'] == 0
+        assert today['dispatched'] == 0
 
 
 class TestGetAbcAnalysis:
@@ -135,20 +139,20 @@ class TestGetAbcAnalysis:
 
     def test_classifies_items(self, test_db):
         for _ in range(10):
-            _seed_scan_txn('item-001', 'scan_out', -1, days_ago=1)
-        _seed_scan_txn('item-002', 'scan_out', -1, days_ago=1)
+            _seed_scan_txn('item-001', 'warehouse_dispatch', -1, days_ago=1)
+        _seed_scan_txn('item-002', 'warehouse_dispatch', -1, days_ago=1)
         result = get_abc_analysis()
         assert 'item-001' in result
         assert result['item-001']['class'] in ('A', 'B', 'C')
 
     def test_high_volume_is_class_a(self, test_db):
-        # item-001 gets many txns, item-002 few
+        # item-001 moves far more volume than the rest
         for _ in range(20):
-            _seed_scan_txn('item-001', 'scan_out', -1)
-        _seed_scan_txn('item-002', 'scan_out', -1)
-        _seed_scan_txn('item-003', 'scan_out', -1)
-        _seed_scan_txn('item-004', 'scan_out', -1)
-        _seed_scan_txn('item-005', 'scan_out', -1)
+            _seed_scan_txn('item-001', 'warehouse_dispatch', -1)
+        _seed_scan_txn('item-002', 'warehouse_dispatch', -1)
+        _seed_scan_txn('item-003', 'warehouse_dispatch', -1)
+        _seed_scan_txn('item-004', 'warehouse_dispatch', -1)
+        _seed_scan_txn('item-005', 'warehouse_dispatch', -1)
         result = get_abc_analysis()
         assert result['item-001']['class'] == 'A'
 
@@ -233,3 +237,109 @@ class TestAnalyticsEndpoints:
         data = r.get_json()
         for key in ('total_items', 'total_quantity', 'low_stock_count', 'unread_alerts'):
             assert key in data
+
+
+# ── Pipeline-driven analytics ─────────────────────────────────────────────────
+# The four-station pipeline records warehouse_dispatch / warehouse_receive.
+# scan_in / scan_out come only from the legacy single-reader handler, so
+# analytics keyed on those actions never see real traffic.
+
+class TestDemandSignal:
+    def test_dispatch_drives_daily_usage(self, test_db):
+        for d in range(1, 8):
+            _seed_scan_txn('item-001', 'warehouse_dispatch', -2, days_ago=d)
+        result = get_item_analytics('item-001', 50)
+        # 7 days x 2 units over a 30-day zero-filled window
+        assert result['avg_daily_usage'] > 0
+        assert result['avg_daily_usage'] == pytest.approx(14 / 30, abs=0.01)
+
+    def test_legacy_scan_out_is_not_demand(self, test_db):
+        for d in range(1, 8):
+            _seed_scan_txn('item-001', 'scan_out', -2, days_ago=d)
+        result = get_item_analytics('item-001', 50)
+        assert result['avg_daily_usage'] == 0.0
+
+    def test_daily_usage_is_zero_filled(self, test_db):
+        _seed_scan_txn('item-001', 'warehouse_dispatch', -3, days_ago=0)
+        _seed_scan_txn('item-001', 'warehouse_dispatch', -1, days_ago=5)
+        usage = _get_daily_usage('item-001', days=30)
+        assert len(usage) == 30
+        assert [u['used'] for u in usage].count(0) == 28
+        assert usage[-1]['used'] == 3          # today
+        assert usage[-6]['used'] == 1          # five days ago
+
+    def test_gradient_boosting_runs_on_dispatch_history(self, test_db):
+        for d in range(1, 15):
+            _seed_scan_txn('item-001', 'warehouse_dispatch', -(d % 4 + 1), days_ago=d)
+        result = get_item_analytics('item-001', 100)
+        assert result['forecast_method'] == 'gradient_boosting'
+
+    def test_sparse_history_stays_on_smoothing(self, test_db):
+        # One active day is not enough to justify claiming an ML forecast.
+        _seed_scan_txn('item-001', 'warehouse_dispatch', -1, days_ago=1)
+        result = get_item_analytics('item-001', 100)
+        assert result['forecast_method'] == 'exponential_smoothing'
+
+
+class TestTrendsUsePipelineActions:
+    def test_counts_warehouse_receive_and_dispatch(self, test_db):
+        _seed_scan_txn('item-001', 'warehouse_receive', 1, days_ago=0)
+        _seed_scan_txn('item-001', 'warehouse_dispatch', -1, days_ago=0)
+        today = get_transaction_trends(1)[-1]
+        assert today['received'] == 1
+        assert today['dispatched'] == 1
+
+
+class TestAbcIsCumulativePareto:
+    def test_uses_pipeline_actions(self, test_db):
+        _seed_scan_txn('item-001', 'warehouse_dispatch', -5, days_ago=1)
+        result = get_abc_analysis()
+        assert 'item-001' in result
+
+    def test_dominant_item_is_class_a(self, test_db):
+        _seed_scan_txn('item-001', 'warehouse_dispatch', -90, days_ago=1)
+        for iid in ('item-002', 'item-003', 'item-004', 'item-005'):
+            _seed_scan_txn(iid, 'warehouse_dispatch', -1, days_ago=1)
+        result = get_abc_analysis()
+        assert result['item-001']['class'] == 'A'
+        # The long tail past 95% cumulative volume is C, never A.
+        assert result['item-005']['class'] == 'C'
+
+    def test_ranks_by_volume_not_row_count(self, test_db):
+        # item-002 has more rows but far less volume.
+        _seed_scan_txn('item-001', 'warehouse_dispatch', -100, days_ago=1)
+        for _ in range(5):
+            _seed_scan_txn('item-002', 'warehouse_dispatch', -1, days_ago=1)
+        result = get_abc_analysis()
+        assert result['item-001']['volume'] == 100
+        assert result['item-002']['volume'] == 5
+        assert result['item-001']['class'] == 'A'
+
+
+class TestAnomalyWindow:
+    def test_reads_the_most_recent_transactions(self, test_db):
+        for i in range(12):
+            _seed_scan_txn('item-001', 'warehouse_dispatch', -1, days_ago=20 - i)
+        rows = _recent_transactions(limit=5)
+        assert len(rows) == 5
+        stamps = [r['timestamp'] for r in rows]
+        assert stamps == sorted(stamps), 'rows must be chronological for the gap feature'
+        newest_first = _recent_transactions(limit=12)
+        assert stamps[-1] == newest_first[-1]['timestamp'], 'must end at the newest row'
+
+    def test_window_is_not_the_oldest_rows(self, test_db):
+        # Compared against independent SQL, not against another call to the
+        # function under test - a self-comparison stays true either way.
+        for i in range(12):
+            _seed_scan_txn('item-00%d' % (i % 8 + 1), 'warehouse_dispatch', -1, days_ago=20 - i)
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT id FROM transactions ORDER BY timestamp DESC, id DESC LIMIT 4')
+        newest = sorted(r['id'] for r in c.fetchall())
+        c.execute('SELECT id FROM transactions ORDER BY timestamp ASC, id ASC LIMIT 4')
+        oldest = sorted(r['id'] for r in c.fetchall())
+        conn.close()
+        assert newest != oldest, 'fixture must distinguish newest from oldest'
+
+        window = sorted(r['id'] for r in _recent_transactions(limit=4))
+        assert window == newest

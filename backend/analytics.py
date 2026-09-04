@@ -13,23 +13,47 @@ ALPHA        = 0.3
 REORDER_COST = 10.0
 HOLDING_COST = 0.5
 
+# Pipeline actions that move stock. The four-station pipeline writes these;
+# 'scan_in' / 'scan_out' come only from the legacy single-reader handler, so
+# analytics keyed on those never observe real traffic.
+DEMAND_ACTION   = 'warehouse_dispatch'
+RECEIPT_ACTION  = 'warehouse_receive'
+
+# Days that must show actual dispatch before a Gradient Boosting forecast is
+# claimed. A lag-3 model fitted to an almost-empty series is ML in name only.
+MIN_ACTIVE_DAYS = 3
+
 
 # ── Per-item helpers ──────────────────────────────────────────────────────────
 
 def _get_daily_usage(item_id, days=30):
+    """Units dispatched per day over the last `days` days, zero-filled.
+
+    Dispatch is the demand signal: warehouse_dispatch is the only action that
+    records goods physically leaving the building, and it stores a negative
+    quantity_change, so -quantity_change is units out.
+
+    Days with no dispatch are returned as 0 rather than omitted. _gb_forecast
+    builds lag and rolling-mean features by position, so it needs a contiguous
+    daily series - a gappy one silently treats last month's scan as yesterday's.
+    """
     conn = get_db()
     c = conn.cursor()
-    since = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    start = datetime.now() - timedelta(days=days - 1)
     c.execute('''
         SELECT DATE(timestamp) AS day, SUM(-quantity_change) AS used
         FROM transactions
-        WHERE item_id = ? AND action = 'scan_out' AND DATE(timestamp) >= ?
+        WHERE item_id = ? AND action = ? AND DATE(timestamp) >= ?
         GROUP BY DATE(timestamp)
-        ORDER BY day
-    ''', (item_id, since))
-    rows = c.fetchall()
+    ''', (item_id, DEMAND_ACTION, start.strftime('%Y-%m-%d')))
+    by_day = {r['day']: (r['used'] or 0) for r in c.fetchall()}
     conn.close()
-    return [{'date': r['day'], 'used': r['used'] or 0} for r in rows]
+
+    series = []
+    for i in range(days):
+        day = (start + timedelta(days=i)).strftime('%Y-%m-%d')
+        series.append({'date': day, 'used': by_day.get(day, 0)})
+    return series
 
 
 def _exponential_smoothing(values):
@@ -43,8 +67,12 @@ def _exponential_smoothing(values):
 
 def _gb_forecast(usages):
     """Gradient Boosting demand forecast using lag + rolling-mean features.
-    Falls back to exponential smoothing when sklearn is unavailable or data < 7 days."""
-    if not _SKLEARN or len(usages) < 7:
+
+    Falls back to exponential smoothing when sklearn is unavailable, the series
+    is shorter than 7 days, or fewer than MIN_ACTIVE_DAYS days saw any dispatch.
+    The series is zero-filled, so length alone no longer implies real history."""
+    active_days = sum(1 for v in usages if v)
+    if not _SKLEARN or len(usages) < 7 or active_days < MIN_ACTIVE_DAYS:
         return _exponential_smoothing(usages), 'exponential_smoothing'
 
     vals = np.array(usages, dtype=float)
@@ -104,19 +132,30 @@ def get_item_analytics(item_id, current_quantity):
     }
 
 
+def _recent_transactions(limit=500):
+    """The most recent `limit` transactions, oldest-first.
+
+    Chronological order matters: the anomaly detector derives an inter-scan
+    gap feature by walking the list forward in time.
+    """
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, item_id, action, quantity_change, timestamp, device_id
+        FROM transactions
+        ORDER BY timestamp DESC, id DESC
+        LIMIT ?
+    """, (limit,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    rows.reverse()   # newest-N selected above, returned oldest-first
+    return rows
+
+
 def detect_scan_anomalies():
     """Isolation Forest anomaly detection on recent scan transactions.
     Returns list of anomalous transaction dicts (most-recent last)."""
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''
-        SELECT id, item_id, action, quantity_change, timestamp, device_id
-        FROM transactions
-        ORDER BY timestamp ASC
-        LIMIT 500
-    ''')
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
+    rows = _recent_transactions(limit=500)
 
     if not _SKLEARN or len(rows) < 10:
         return []
@@ -183,20 +222,20 @@ def get_all_analytics():
 # ── Aggregate analytics ───────────────────────────────────────────────────────
 
 def get_transaction_trends(days=7):
-    """Daily scan_in / scan_out counts for the last N days."""
+    """Daily warehouse receive / dispatch counts for the last N days."""
     conn = get_db()
     c = conn.cursor()
     since = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
     c.execute('''
         SELECT
             DATE(timestamp) AS day,
-            SUM(CASE WHEN action = 'scan_in'  THEN 1 ELSE 0 END) AS received,
-            SUM(CASE WHEN action = 'scan_out' THEN 1 ELSE 0 END) AS dispatched
+            SUM(CASE WHEN action = ? THEN 1 ELSE 0 END) AS received,
+            SUM(CASE WHEN action = ? THEN 1 ELSE 0 END) AS dispatched
         FROM transactions
         WHERE DATE(timestamp) >= ?
         GROUP BY DATE(timestamp)
         ORDER BY day
-    ''', (since,))
+    ''', (RECEIPT_ACTION, DEMAND_ACTION, since))
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
 
@@ -210,25 +249,42 @@ def get_transaction_trends(days=7):
 
 
 def get_abc_analysis():
-    """Classify items as A/B/C by transaction volume."""
+    """Classify items A/B/C by cumulative share of stock movement.
+
+    Standard Pareto banding: ranked by volume descending, the items making up
+    the first 80% of movement are A, those up to 95% are B, the tail is C.
+    Bands are decided on the cumulative share *before* each item, so the
+    largest item is always A even when it alone exceeds 95%.
+
+    Volume is units moved (ABS(quantity_change)) across the two warehouse gate
+    actions, not row count - one 50-unit carton outweighs fifty single scans.
+    """
     conn = get_db()
     c = conn.cursor()
     c.execute('''
-        SELECT item_id, COUNT(*) AS txn_count
+        SELECT item_id,
+               COUNT(*) AS txn_count,
+               SUM(ABS(quantity_change)) AS volume
         FROM transactions
-        WHERE action IN ('scan_in', 'scan_out')
+        WHERE action IN (?, ?)
         GROUP BY item_id
-        ORDER BY txn_count DESC
-    ''')
-    rows = c.fetchall()
+        ORDER BY volume DESC, txn_count DESC
+    ''', (RECEIPT_ACTION, DEMAND_ACTION))
+    rows = [dict(r) for r in c.fetchall()]
     conn.close()
 
-    total = len(rows)
-    result = {}
-    for i, row in enumerate(rows):
-        pct = (i + 1) / total if total > 0 else 1.0
-        cls = 'A' if pct <= 0.2 else ('B' if pct <= 0.5 else 'C')
-        result[row['item_id']] = {'class': cls, 'txn_count': row['txn_count']}
+    total = sum(r['volume'] or 0 for r in rows)
+    result, cumulative = {}, 0
+    for row in rows:
+        share_before = (cumulative / total) if total else 0.0
+        cls = 'A' if share_before < 0.80 else ('B' if share_before < 0.95 else 'C')
+        cumulative += (row['volume'] or 0)
+        result[row['item_id']] = {
+            'class':          cls,
+            'txn_count':      row['txn_count'],
+            'volume':         row['volume'] or 0,
+            'cumulative_pct': round((cumulative / total * 100) if total else 100.0, 1),
+        }
     return result
 
 

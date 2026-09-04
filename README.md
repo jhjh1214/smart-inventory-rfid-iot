@@ -539,19 +539,25 @@ module degrades gracefully to the statistical fallbacks.
 
 | Feature | Method |
 |---------|--------|
-| **Demand forecast** | Gradient Boosting Regressor over lag-1/2/3 + 3-day and 7-day rolling means (needs ≥ 7 days of history); falls back to exponential smoothing (α = 0.3) |
+| **Demand forecast** | Gradient Boosting Regressor over lag-1/2/3 + 3-day and 7-day rolling means, fitted to a zero-filled 30-day `warehouse_dispatch` series; falls back to exponential smoothing (α = 0.3) when sklearn is missing, the series is under 7 days, or fewer than 3 days saw any dispatch |
 | **EOQ** | `√(2DS/H)` — D = annual demand, S = 10 (reorder cost), H = 0.5 (holding cost) |
 | **Risk score** | Days of stock remaining → 90 (≤ 3 d), 60 (≤ 7 d), 20 (otherwise) |
-| **ABC analysis** | Items ranked by transaction volume — top 20 % = A, next 30 % = B, rest = C |
-| **Anomaly detection** | Isolation Forest (contamination 0.05) over the last 500 transactions, featurised as hour-of-day, weekday, |Δqty|, inter-scan gap |
+| **ABC analysis** | Items ranked by units moved (`ABS(quantity_change)` over the two warehouse gate actions); cumulative Pareto banding — first 80 % of volume = A, up to 95 % = B, tail = C |
+| **Anomaly detection** | Isolation Forest (contamination 0.05) over the 500 **most recent** transactions, read oldest-first so the inter-scan gap is computed forward in time; featurised as hour-of-day, weekday, |Δqty|, gap |
 | **Transaction trends** | Daily received / dispatched counts, zero-filled for missing days |
 | **Inventory summary** | Health score, low-stock / out-of-stock / dead-stock counts, today's scans, today's security events |
 | **Pipeline summary** | Tag counts per stage, per-item stage breakdown, rack utilisation, write-job history |
 
-> **Known gap:** the demand, trend, and ABC queries filter on the legacy `scan_in` / `scan_out`
-> actions, which the current pipeline does not emit (it writes `warehouse_receive` /
-> `warehouse_dispatch`). Until those queries are widened, forecasting and ABC see no pipeline
-> traffic. Anomaly detection and the pipeline/inventory summaries are unaffected.
+**Demand signal.** `warehouse_dispatch` is what counts as demand — the only action recording
+goods physically leaving the building, which is exactly the "30-day dispatch history" the UEC
+abstract describes. `rack_remove` (picking) is deliberately excluded: a pick that never ships
+is not demand. The legacy `scan_in` / `scan_out` actions, emitted only by the single-reader
+demo handler, are excluded from every analytics query.
+
+> **Note on empty output.** An item with no dispatch in the window reports `0.0` demand and
+> `∞` days remaining, and the forecast stays on exponential smoothing. That is the honest
+> result, not a failure — before the demand signal was corrected, the same items reported a
+> fabricated 1.0 unit/day and an EOQ of 120.8 apiece.
 
 ---
 
@@ -1082,16 +1088,23 @@ If building it, the natural shape given the existing code: a `/api/assistant` en
 answers natural-language questions over `items`, `transactions`, and `alerts` — the data is
 already structured and the dashboard already has a modal pattern to host it.
 
-### 2. Analytics are blind to pipeline traffic
+### 2. Analytics are blind to pipeline traffic — **fixed**
 
-The abstract states the Gradient Boosting model is *"trained on 30-day dispatch history"*, but
-`_get_daily_usage` filters `action = 'scan_out'` — a **legacy** action the pipeline never emits.
-Real dispatches are recorded as `warehouse_dispatch`. The same applies to `get_transaction_trends`
-(`scan_in`/`scan_out`) and `get_abc_analysis`.
+`_get_daily_usage`, `get_transaction_trends` and `get_abc_analysis` filtered on the legacy
+`scan_in` / `scan_out` actions, which the pipeline never emits. The forecast therefore trained
+on an empty series and always fell back to exponential smoothing — the opposite of the
+abstract's claim — while reporting a fabricated 1.0 unit/day and an identical EOQ of 120.8 for
+every item. All three now read the pipeline's own actions, and the 30-day series is zero-filled
+so the model's lag features line up with real calendar days.
 
-As written, the forecast trains on an empty series and silently falls back to exponential
-smoothing — the opposite of the paper's central claim. `detect_scan_anomalies` is unaffected
-(it reads all transactions). **This is a one-line-per-query fix and should be done first.**
+`detect_scan_anomalies` was **not** unaffected, contrary to an earlier reading of this section:
+it ordered `timestamp ASC LIMIT 500`, taking the *oldest* 500 rows while documenting itself as
+"recent". Below 500 transactions that is invisible; past it, anomaly detection would have
+frozen on the earliest history forever. It now takes the newest 500, returned oldest-first.
+
+**Remaining:** the demo database holds no `warehouse_dispatch` rows inside the last 30 days
+(the newest is 2026-07-01), so the Gradient Boosting path is exercised by tests but not by the
+shipped demo data. A live demo needs recent dispatch scans, real or seeded.
 
 ### 3. Node count and test scope
 
@@ -1158,7 +1171,7 @@ it matters before the system touches real stock or an untrusted network.
 
 | Area | Gap |
 |------|-----|
-| Analytics | Demand forecast, trends, and ABC query `scan_in`/`scan_out`, which the pipeline never emits — see [Analytics Engine](#analytics-engine) |
+| Analytics | ~~Demand forecast, trends, and ABC query `scan_in`/`scan_out`~~ — fixed; all three now read the pipeline's own actions. Demo data still has no dispatch inside the 30-day window, so the ML path needs recent scans to show in a live demo |
 | Reservations | `reserved_qty` is set by the reserve endpoints but never consumed or released by dispatch, and no dashboard control calls it |
 | Pallets | Pallet scans at `factory_exit` are routed to the carton handler, which looks pallets up in the `cartons` table and aborts — pallets never reach `in_transit` via that station |
 | Purchase orders | `_check_purchase_order` increments receipts by 1 even when an N-unit carton arrives; POs carry no supplier, unit cost, or expected date, and are not linked to the tags that fulfil them |

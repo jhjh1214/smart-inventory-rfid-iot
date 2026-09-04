@@ -278,10 +278,22 @@ Two claims do not hold, and are the priority work items:
 
 1. **"LLM Assistant"** appears in the Figure 1 architecture caption. No such code exists.
    Build it or remove it from the figure.
-2. **Gradient Boosting "trained on 30-day dispatch history"** — `_get_daily_usage` filters
-   `action = 'scan_out'`, which the pipeline never emits (it writes `warehouse_dispatch`), so
-   the model trains on an empty series and always falls back to exponential smoothing. Same
-   flaw in `get_transaction_trends` and `get_abc_analysis`.
+2. ~~**Gradient Boosting "trained on 30-day dispatch history"**~~ — **fixed.** The three
+   queries now read `warehouse_dispatch` / `warehouse_receive` instead of the legacy
+   `scan_in` / `scan_out`, and the 30-day demand series is zero-filled so the lag and
+   rolling-mean features line up with calendar days. `_gb_forecast` additionally requires
+   `MIN_ACTIVE_DAYS = 3` days of real dispatch before claiming a gradient-boosting forecast,
+   so the dashboard's "ML" badge cannot appear over an all-zero series. ABC was rebuilt as
+   cumulative Pareto (80 % / 95 %) ranked by units moved rather than by row-count percentile.
+   Hyperparameters are untouched, so the published equations still hold.
+
+   Also fixed alongside it: `detect_scan_anomalies` read `ORDER BY timestamp ASC LIMIT 500`,
+   i.e. the *oldest* 500 rows despite documenting itself as "recent" — harmless below 500
+   transactions, permanently frozen above it. The row fetch is now `_recent_transactions()`.
+
+   **Still open:** no `warehouse_dispatch` row in the demo DB falls inside the last 30 days
+   (newest is 2026-07-01), so the GBR path is covered by tests but invisible in a live demo
+   until recent dispatch scans exist.
 
 Full deltas between abstract v1 and v2, and the complete claim-vs-code table, are in the
 README's *Academic Deliverables* and *Specification Gaps to Close* sections.

@@ -12,8 +12,12 @@ WHAT IT WRITES
     1. Ledger      warehouse_receive / warehouse_dispatch transactions across the
                    last N days, arranged to land EXACTLY on each item's current
                    quantity so `items.quantity` is never modified.
-    2. Tags        unit tags spread across the pipeline states, with rack
-                   locations and last-scan times.
+    2. Catalogue   returnable tools and serialised assets, so the stock profiles
+                   have something to demonstrate. Added only when absent;
+                   existing items are never modified.
+    3. Tags        unit tags spread across the pipeline states, with rack
+                   locations and last-scan times. A returnable asset gets a tag
+                   in return_pending rather than dispatched.
     3. Cartons     cartons of a single SKU, some loaded onto pallets.
     4. Pallets     pallets holding those cartons.
     5. Orders      purchase orders in open / partial / closed states.
@@ -53,6 +57,17 @@ DEFAULT_DB  = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 RACK_ROWS = ['A', 'B', 'C', 'D']
 STATIONS  = ['esp32-01', 'esp32-02', 'esp32-03', 'esp32-04']
+
+# The stock catalogue ships as components, which are all 'consumable'. Without
+# a few genuine assets the returnable and serialised profiles have nothing to
+# show, so the seeder adds them. Inserted only if absent, never overwritten.
+ASSET_ITEMS = [
+    ('tool-001',  'Torque Wrench',       4, 'pcs', 1, 'returnable'),
+    ('tool-002',  'Digital Multimeter',  3, 'pcs', 1, 'returnable'),
+    ('tool-003',  'Soldering Station',   2, 'pcs', 1, 'returnable'),
+    ('asset-001', 'Thermal Camera',      1, 'pcs', 1, 'serialised'),
+    ('asset-002', 'Calibration Kit',     2, 'pcs', 1, 'serialised'),
+]
 
 
 def _utcnow():
@@ -95,6 +110,38 @@ def _plan_item(rng, current_qty, days, active_ratio=0.6):
 
     plan.reverse()
     return after, plan
+
+
+def schema_is_current(conn):
+    """False when the database predates migration 15 (items.stock_profile).
+
+    Migrations run at backend startup, not here - the seeder never alters the
+    schema, so it says what to do instead of failing on a missing column.
+    """
+    c = conn.cursor()
+    c.execute('PRAGMA table_info(items)')
+    return 'stock_profile' in {r[1] for r in c.fetchall()}
+
+
+def ensure_catalogue(conn):
+    """Add the asset-type demo items if they are missing. Returns how many.
+
+    Runs before the ledger is planned so these items get movement history like
+    any other. Existing rows are never touched - an item already present keeps
+    whatever quantity and profile it has.
+    """
+    c = conn.cursor()
+    added = 0
+    for item_id, name, qty, unit, threshold, profile in ASSET_ITEMS:
+        c.execute('SELECT 1 FROM items WHERE id = ?', (item_id,))
+        if c.fetchone():
+            continue
+        c.execute('INSERT INTO items (id, name, quantity, unit, low_stock_threshold, '
+                  'stock_profile) VALUES (?, ?, ?, ?, ?, ?)',
+                  (item_id, name, qty, unit, threshold, profile))
+        added += 1
+    conn.commit()
+    return added
 
 
 def build_ledger(conn, days, rng):
@@ -201,9 +248,18 @@ def build_world(conn, rng):
     #    item's quantity, so the shelf never claims more stock than exists.
     shape = [('racked', 3), ('received', 1), ('in_transit', 1),
              ('picked', 1), ('tagged', 1), ('dispatched', 2)]
+    c.execute('SELECT id, stock_profile FROM items')
+    profiles = {r[0]: (r[1] or 'consumable') for r in c.fetchall()}
+
     for item_id, qty in items:
         racked_budget = max(0, min(3, qty))
-        for state, count in shape:
+        # A returnable asset that is out on loan sits in return_pending, which
+        # is where its profile puts it on dispatch.
+        item_shape = list(shape)
+        if profiles.get(item_id) == 'returnable':
+            item_shape = [(s, n) for s, n in item_shape if s != 'dispatched']
+            item_shape.append(('return_pending', 1))
+        for state, count in item_shape:
             n = racked_budget if state == 'racked' else count
             for _ in range(n):
                 rack = ('%s%d' % (rng.choice(RACK_ROWS), rng.randint(1, 6))
@@ -266,6 +322,37 @@ def build_world(conn, rng):
 
 # ── Write ─────────────────────────────────────────────────────────────────────
 
+def clear_seeded(conn):
+    """Delete previously seeded rows, so a re-seed replaces rather than stacks.
+
+    Only rows this script created: transactions stamped device_id='demo-seed'
+    and tags, cartons and pallets carrying DEMO_PREFIX. Real scans are matched
+    by neither and are never touched.
+
+    --force without --reset layers a second ledger over the first, which leaves
+    contradictory running balances in the audit trail even though the final
+    quantity still reconciles.
+    """
+    c = conn.cursor()
+    like = DEMO_PREFIX + '%'
+    removed = {}
+    c.execute('DELETE FROM transactions WHERE device_id = ?', (DEVICE_ID,))
+    removed['transactions'] = c.rowcount
+    c.execute('DELETE FROM pallet_cartons WHERE pallet_id IN (SELECT id FROM pallets WHERE created_by = ?)', (DEVICE_ID,))
+    c.execute('DELETE FROM pallets WHERE created_by = ?', (DEVICE_ID,))
+    removed['pallets'] = c.rowcount
+    c.execute('DELETE FROM cartons WHERE created_by = ?', (DEVICE_ID,))
+    removed['cartons'] = c.rowcount
+    c.execute('DELETE FROM rfid_tags WHERE uid LIKE ?', (like,))
+    removed['tags'] = c.rowcount
+    c.execute('DELETE FROM purchase_orders WHERE created_by = ?', (DEVICE_ID,))
+    removed['orders'] = c.rowcount
+    c.execute('DELETE FROM write_jobs WHERE created_by = ?', (DEVICE_ID,))
+    removed['jobs'] = c.rowcount
+    conn.commit()
+    return removed
+
+
 def seeded_counts(conn):
     c = conn.cursor()
     like = DEMO_PREFIX + '%'
@@ -325,7 +412,10 @@ def main(argv=None):
     ap.add_argument('--status', action='store_true', help='report what is already seeded and exit')
     ap.add_argument('--dry-run', action='store_true', help='print a summary and write nothing')
     ap.add_argument('--yes', action='store_true', help='confirm the write')
-    ap.add_argument('--force', action='store_true', help='seed again even if seeded rows exist')
+    ap.add_argument('--force', action='store_true',
+                    help='seed again on top of existing seeded rows (layers a second ledger)')
+    ap.add_argument('--reset', action='store_true',
+                    help='delete previously seeded rows first, then seed - the safe re-seed')
     args = ap.parse_args(argv)
 
     db = os.path.abspath(args.db)
@@ -342,13 +432,28 @@ def main(argv=None):
                 print('  %-14s %d' % (k, v))
             return 0
 
-        if existing['transactions'] and not args.force:
+        if existing['transactions'] and not (args.force or args.reset):
             print('This database already holds %d demo-seed transactions.'
                   % existing['transactions'])
-            print('Seeding again would double the history. Re-run with --force if intended.')
+            print('Use --reset to replace them, or --force to layer a second ledger on top')
+            print('(which leaves contradictory running balances in the audit trail).')
             return 1
 
+        if args.reset and not args.dry_run:
+            if not args.yes:
+                print('--reset deletes previously seeded rows. Add --yes to confirm.')
+                return 1
+            removed = clear_seeded(conn)
+            print('Reset    : removed %s' % ', '.join('%d %s' % (v, k)
+                                                      for k, v in removed.items() if v))
+
+        if not schema_is_current(conn):
+            print('This database predates migration 15 (items.stock_profile).')
+            print('Start the backend once so migrations run, then re-run this.')
+            return 2
+
         rng = random.Random(args.seed)
+        added = ensure_catalogue(conn)
         ledger = build_ledger(conn, args.days, rng)
         if not ledger:
             print('No items in the catalogue - nothing to seed.')
@@ -361,6 +466,8 @@ def main(argv=None):
 
         print('Database : %s' % db)
         print('Window   : %d days ending today' % args.days)
+        print('Catalogue: %d asset-type items added (returnable tools, serialised assets)'
+              % added)
         print('Ledger   : %d dispatch (%d units), %d receive (%d units) - %s' % (
             len(dispatches), sum(-r[2] for r in dispatches),
             len(receipts), sum(r[2] for r in receipts),

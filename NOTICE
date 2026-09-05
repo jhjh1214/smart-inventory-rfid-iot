@@ -1,0 +1,29 @@
+Smart Inventory Management System (RFID + IoT)
+Copyright (c) 2026 Tai Ke Ying Dorothy
+
+This product is licensed under the MIT License; see LICENSE.
+
+────────────────────────────────────────────────────────────────────────────
+Third-party components
+────────────────────────────────────────────────────────────────────────────
+
+esp32/mfrc522.py
+    A MicroPython driver for the NXP MFRC522 RFID reader. This file was
+    obtained from the MicroPython community rather than written for this
+    project, and it carries no copyright header. It is widely circulated
+    under the MIT License, but the upstream source has NOT been confirmed —
+    it is therefore NOT covered by the MIT grant above, and its provenance
+    should be established and attributed before this project is relied on
+    commercially or redistributed as a whole.
+
+The dashboard loads the following at runtime from public CDNs. They are not
+redistributed in this repository and remain under their own licenses:
+
+    Tailwind CSS      MIT
+    Chart.js          MIT
+    jsPDF             MIT
+    Font Awesome      CC BY 4.0 / SIL OFL 1.1 / MIT (per component)
+
+Python dependencies (Flask, paho-mqtt, scikit-learn, numpy, Werkzeug, pytest)
+are declared in requirements-*.txt, installed from PyPI, and remain under
+their own licenses.

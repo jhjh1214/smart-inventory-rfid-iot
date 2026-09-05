@@ -10,10 +10,16 @@ What it does, per attached board:
 
     1. Reads the board's existing config.py.
     2. Finds the entry for the Wi-Fi network this laptop is currently on.
-       Adds it if missing, taking the password from the Windows profile store.
+       Adds it if missing, and refreshes the stored password if it no longer
+       matches - both taken from the Windows profile store, which is
+       authoritative because this laptop is demonstrably on the network.
     3. Sets that entry's broker to this laptop's current IP.
     4. Moves that entry first, so boot.py stops blocking on absent networks.
     5. Writes it back, verifies, and resets the board.
+
+It also warns when this laptop is on a band or auth type the ESP32 cannot join
+(5/6 GHz, or WPA2-Enterprise), which otherwise looks like a working config on a
+board that never appears.
 
 DEVICE_ID and READERS are never modified — each board keeps its own identity and
 reader layout. Originals are backed up under tools/board-backups/ before any
@@ -58,6 +64,7 @@ MOSQUITTO_SUB = [
 
 SSID_RE = re.compile(r"'ssid':\s*'([^']*)'")
 BROKER_RE = re.compile(r"('broker':\s*)'[^']*'")
+PASSWORD_RE = re.compile(r"('password':\s*)'[^']*'")
 ENTRY_RE = re.compile(r'\{.*?\}', re.S)
 BLOCK_RE = re.compile(r'WIFI_NETWORKS\s*=\s*\[(.*?)\n\]', re.S)
 
@@ -81,6 +88,32 @@ def current_ssid():
     # 'SSID' matches before 'BSSID' because BSSID lines start with B
     m = re.search(r'^\s*SSID\s*:\s*(.+)$', text, re.M)
     return m.group(1).strip() if m else None
+
+
+def radio_notes():
+    """Warn about networks this laptop can join but the ESP32s cannot.
+
+    Both cases below leave the boards silently offline holding a config that
+    looks perfectly correct, so they are worth saying out loud before a demo.
+    """
+    text = _netsh(['wlan', 'show', 'interfaces'])
+    notes = []
+
+    band = re.search(r'^\s*Band\s*:\s*(.+)$', text, re.M)
+    if band and re.search(r'[56]\s*GHz', band.group(1)):
+        notes.append(
+            'This laptop is on %s. ESP32 radios are 2.4 GHz only, so the boards '
+            'cannot join this band - switch the hotspot/router to 2.4 GHz, or '
+            'use a network that broadcasts both.' % band.group(1).strip())
+
+    auth = re.search(r'^\s*Authentication\s*:\s*(.+)$', text, re.M)
+    if auth and 'enterprise' in auth.group(1).lower():
+        notes.append(
+            "This network uses %s. MicroPython's WLAN does not support "
+            'WPA2-Enterprise and Windows holds no shareable key for it, so the '
+            'boards cannot join it at all.' % auth.group(1).strip())
+
+    return notes
 
 
 def current_ip():
@@ -192,7 +225,8 @@ def patch(src, ssid, ip, password):
         if not password:
             raise ValueError(
                 "network '%s' is not on the board and Windows has no saved "
-                "password for it" % ssid)
+                "key for it (enterprise/802.1X networks have none) - add the "
+                "entry to config.py by hand" % ssid)
         entries.insert(0, (
             "{\n"
             "        'ssid':     '%s',\n"
@@ -202,12 +236,21 @@ def patch(src, ssid, ip, password):
         changes.append("added network '%s'" % ssid)
     else:
         for i, e in enumerate(entries):
-            if ssid_of(e) == ssid:
-                old = re.search(r"'broker':\s*'([^']*)'", e)
-                if old and old.group(1) != ip:
-                    entries[i] = BROKER_RE.sub(
-                        lambda mo: mo.group(1) + "'" + ip + "'", e)
-                    changes.append('broker %s -> %s' % (old.group(1), ip))
+            if ssid_of(e) != ssid:
+                continue
+            old = re.search(r"'broker':\s*'([^']*)'", e)
+            if old and old.group(1) != ip:
+                e = BROKER_RE.sub(lambda mo: mo.group(1) + "'" + ip + "'", e)
+                changes.append('broker %s -> %s' % (old.group(1), ip))
+            # Refresh the password too: the network key may have been rotated
+            # since the board was last flashed. Windows is the source of truth
+            # here — this laptop is demonstrably associated with the network.
+            stored = re.search(r"'password':\s*'([^']*)'", e)
+            if password and stored and stored.group(1) != password:
+                e = PASSWORD_RE.sub(
+                    lambda mo: mo.group(1) + "'" + password + "'", e)
+                changes.append('password updated')
+            entries[i] = e
 
     if known[:1] != [ssid]:
         entries.sort(key=lambda e: 0 if ssid_of(e) == ssid else 1)
@@ -331,6 +374,8 @@ def main():
 
     print('Network : %s' % ssid)
     print('Laptop  : %s' % ip)
+    for note in radio_notes():
+        print('WARNING : %s' % note)
 
     password = saved_password(ssid)
 

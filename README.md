@@ -1280,8 +1280,8 @@ it matters before the system touches real stock or an untrusted network.
 
 | Area | Gap | Impact |
 |------|-----|--------|
-| Session security | `SECRET_KEY` falls back to a hardcoded default; `debug=True` in `app.run`; no `Secure`/`HttpOnly`/`SameSite` cookie flags; no CSRF tokens; no security headers | Session forgery and the Werkzeug debugger are both reachable if the port is exposed |
-| RBAC | `PUT /api/items/<id>` and `POST /api/tags` are `@login_required`, so a **viewer can edit quantities and re-map tags**; alert mark-read/delete likewise | The documented read-only role is not read-only |
+| Session security | **Mostly fixed.** `SECRET_KEY` is refused in production (`INVENTORY_ENV=production` fails closed) and warns loudly otherwise; `debug` is off unless `FLASK_DEBUG=1`; cookies are `HttpOnly` + `SameSite=Lax`, with `Secure` opt-in via `SESSION_COOKIE_SECURE` since the LAN demo is plain HTTP; `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy` are set. **Still open:** no CSRF tokens (SameSite=Lax is the current mitigation) and no CSP, which needs the CDN assets vendored first |
+| RBAC | **Fixed.** `PUT /api/items/<id>`, `POST /api/tags` and `DELETE /api/alerts/read` are now `@manager_required`, so the read-only role really is read-only. Marking a single alert read stays open to any signed-in user: it is non-destructive and acknowledging something you can already see is reasonable | — |
 | Session lifecycle | Sessions are stateless cookies — deleting a user or changing their role does not invalidate their live session | Revocation is delayed until expiry (8 h) |
 | Default accounts | `manager` / `viewer` are re-created with known passwords on every startup if missing | Deleting them is not permanent |
 | MQTT | `allow_anonymous true`, no TLS, no ACLs | Any LAN host can publish forged scans and move stock arbitrarily |
@@ -1290,10 +1290,10 @@ it matters before the system touches real stock or an untrusted network.
 | Message integrity | MQTT QoS 0, no message IDs, no server-side dedupe (only a 2 s per-UID cooldown on the board) | A replayed or duplicated packet double-counts stock |
 | Concurrency | Read-modify-write sequences (`reserve_stock`, PO receipt) are not transactional; `previous_quantity` on dispatch is reconstructed and is wrong when the clamp at zero fires | Small accounting drift under concurrent scans |
 | Webhooks | No URL allowlist, no HMAC signing, no redirect limits | SSRF reachable by an admin; receivers cannot verify payloads |
-| Uploads | No `MAX_CONTENT_LENGTH`; CSV import commits partial results | Memory exhaustion, partial imports |
-| Error handling | Several endpoints return `str(e)` directly | Leaks SQL internals to the client |
+| Uploads | `MAX_CONTENT_LENGTH` is now 16 MB. **Still open:** CSV import still commits partial results rather than one transaction | Partial imports |
+| Error handling | **Fixed.** The three INSERT paths that returned the raw driver message (e.g. `UNIQUE constraint failed: items.id`) now report the actionable fact and log the detail server-side | — |
 | Offline claim | Dashboard loads Tailwind, Chart.js, and jsPDF from public CDNs | A truly air-gapped LAN renders unstyled and loses charts/PDF export |
-| Backup | `shutil.copy2` on a live WAL database | Copy can be inconsistent; use `VACUUM INTO` or the SQLite backup API |
+| Backup | **Fixed.** `/api/export/backup` uses the SQLite backup API, so the snapshot includes commits still in the write-ahead log; a test asserts the download passes `PRAGMA integrity_check` and carries rows | — |
 | Timezone | SQLite writes UTC via `CURRENT_TIMESTAMP`, analytics filters use local `datetime.now()` alongside `DATE('now')` (UTC) | Day-boundary metrics are off by the UTC offset |
 
 ### Functional gaps
@@ -1302,8 +1302,8 @@ it matters before the system touches real stock or an untrusted network.
 |------|-----|
 | Analytics | ~~Demand forecast, trends, and ABC query `scan_in`/`scan_out`~~ — fixed; all three now read the pipeline's own actions. Demo data still has no dispatch inside the 30-day window, so the ML path needs recent scans to show in a live demo |
 | Reservations | `reserved_qty` is set by the reserve endpoints but never consumed or released by dispatch, and no dashboard control calls it |
-| Pallets | Pallet scans at `factory_exit` are routed to the carton handler, which looks pallets up in the `cartons` table and aborts — pallets never reach `in_transit` via that station |
-| Purchase orders | `_check_purchase_order` increments receipts by 1 even when an N-unit carton arrives; POs carry no supplier, unit cost, or expected date, and are not linked to the tags that fulfil them |
+| Pallets | **Fixed, and the cause ran deeper than this.** `rfid_tags.item_id` is a foreign key into `items`, and a pallet id is not an item, so `_pallet_factory_written` raised `FOREIGN KEY constraint failed` — **no pallet tag could ever be registered**. Pallet lifecycle state now lives in `pallets.state` (cartons are unaffected: they carry a real `item_id`), a dedicated `_pallet_factory_exit` moves the pallet and its cartons to `in_transit`, and the gate falls back to `pallets.state` instead of assuming `in_transit`. The subsystem had no tests at all; it now has nine |
+| Purchase orders | Receipt quantity **fixed**: `_check_purchase_order(c, item_id, qty)` credits what actually arrived — 1 for a unit, the carton's `unit_count`, the per-SKU total for a pallet — so a bulk receipt can now fulfil an order. **Still open:** POs carry no supplier, unit cost or expected date, and are not linked to the tags that fulfil them |
 | Referential cleanup | Deleting an item removes its tags, POs and write jobs but leaves `cartons` orphaned |
 | ERP readiness | No cost/price/supplier/category fields, no stock valuation, no multi-warehouse or bin hierarchy, no lot/expiry tracking, no UoM conversion |
 | Integration surface | Cookie sessions only — no API keys or tokens for machine-to-machine use, no `/api/v1` versioning, no OpenAPI spec, no pagination convention, no inbound webhooks |
@@ -1311,12 +1311,13 @@ it matters before the system touches real stock or an untrusted network.
 
 ### Suggested remediation order
 
-1. `SECRET_KEY` from environment (fail closed), `debug=False`, cookie flags, security headers.
-2. Fix the RBAC decorators on item update and tag registration.
+1. ~~`SECRET_KEY` from environment (fail closed), `debug=False`, cookie flags, security
+   headers.~~ **Done**, except CSRF tokens and a CSP.
+2. ~~Fix the RBAC decorators on item update and tag registration.~~ **Done.**
 3. Broker credentials + per-topic ACLs; TLS if the network is not fully trusted.
 4. Purge Wi-Fi credentials from `config.py` (move to an untracked `config_local.py` — already
    gitignored) and rotate the exposed passwords.
-5. Widen the analytics action filters to the pipeline actions.
+5. ~~Widen the analytics action filters to the pipeline actions.~~ **Done.**
 6. Wrap the read-modify-write paths in explicit transactions; add MQTT message IDs and dedupe.
 7. Vendor the CDN assets locally.
 

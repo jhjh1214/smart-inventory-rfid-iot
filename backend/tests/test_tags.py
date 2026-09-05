@@ -37,22 +37,30 @@ class TestGetTags:
 
 
 class TestRegisterTag:
-    def test_registers_tag(self, viewer_client):
-        r = viewer_client.post('/api/tags', json={
+    def test_registers_tag(self, manager_client):
+        r = manager_client.post('/api/tags', json={
             'uid': 'NEW001', 'item_id': 'item-001', 'state': 'out',
         })
         assert r.status_code == 201
 
-    def test_upserts_existing_tag(self, viewer_client, test_db):
+    def test_viewer_cannot_register_tag(self, viewer_client):
+        # Registering re-maps a physical tag to an item, redirecting every
+        # future scan of it. This returned 201 before.
+        r = viewer_client.post('/api/tags', json={
+            'uid': 'NOPE001', 'item_id': 'item-001', 'state': 'out',
+        })
+        assert r.status_code == 403
+
+    def test_upserts_existing_tag(self, manager_client, test_db):
         _seed_tag(test_db, 'T01', 'item-001', 'out')
-        viewer_client.post('/api/tags', json={'uid': 'T01', 'item_id': 'item-001', 'state': 'in'})
-        tags = viewer_client.get('/api/tags').get_json()
+        manager_client.post('/api/tags', json={'uid': 'T01', 'item_id': 'item-001', 'state': 'in'})
+        tags = manager_client.get('/api/tags').get_json()
         t = next(t for t in tags if t['uid'] == 'T01')
         assert t['state'] == 'in'
 
-    def test_default_state_is_out(self, viewer_client):
-        viewer_client.post('/api/tags', json={'uid': 'DEFAULT01', 'item_id': 'item-001'})
-        tags = viewer_client.get('/api/tags').get_json()
+    def test_default_state_is_out(self, manager_client):
+        manager_client.post('/api/tags', json={'uid': 'DEFAULT01', 'item_id': 'item-001'})
+        tags = manager_client.get('/api/tags').get_json()
         t = next(t for t in tags if t['uid'] == 'DEFAULT01')
         assert t['state'] == 'out'
 

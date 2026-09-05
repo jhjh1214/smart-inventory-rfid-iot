@@ -85,8 +85,13 @@ class TestAddItem:
 
 
 class TestUpdateItem:
-    def test_viewer_can_update_quantity(self, viewer_client):
+    def test_viewer_cannot_update_quantity(self, viewer_client):
+        # The read-only role must be read-only; this asserted 200 before.
         r = viewer_client.put('/api/items/item-001', json={'quantity': 20})
+        assert r.status_code == 403
+
+    def test_manager_can_update_quantity(self, manager_client):
+        r = manager_client.put('/api/items/item-001', json={'quantity': 20})
         assert r.status_code == 200
 
     def test_quantity_updated(self, admin_client):

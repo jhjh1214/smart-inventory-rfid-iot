@@ -87,22 +87,30 @@ class TestMarkAllRead:
 
 
 class TestDeleteReadAlerts:
-    def test_removes_only_read_alerts(self, viewer_client, test_db):
+    def test_removes_only_read_alerts(self, manager_client, test_db):
         _seed_alert(test_db, is_read=1, message='Read alert')
         _seed_alert(test_db, is_read=0, message='Unread alert')
-        r = viewer_client.delete('/api/alerts/read')
+        r = manager_client.delete('/api/alerts/read')
         assert r.status_code == 200
-        alerts = viewer_client.get('/api/alerts').get_json()
+        alerts = manager_client.get('/api/alerts').get_json()
         assert len(alerts) == 1
         assert alerts[0]['message'] == 'Unread alert'
 
-    def test_deletes_all_read_alerts(self, viewer_client, test_db):
+    def test_deletes_all_read_alerts(self, manager_client, test_db):
         for i in range(3):
             _seed_alert(test_db, is_read=1, message=f'Read {i}')
-        viewer_client.delete('/api/alerts/read')
-        alerts = viewer_client.get('/api/alerts').get_json()
+        manager_client.delete('/api/alerts/read')
+        alerts = manager_client.get('/api/alerts').get_json()
         assert len(alerts) == 0
 
-    def test_no_alerts_to_delete_returns_200(self, viewer_client):
-        r = viewer_client.delete('/api/alerts/read')
+    def test_no_alerts_to_delete_returns_200(self, manager_client):
+        r = manager_client.delete('/api/alerts/read')
         assert r.status_code == 200
+
+    def test_viewer_cannot_clear_alerts(self, viewer_client, test_db):
+        # Clearing deletes rows for everyone, so it is a manager action.
+        # Marking a single alert read stays open to any signed-in user.
+        _seed_alert(test_db, is_read=1, message='Read alert')
+        r = viewer_client.delete('/api/alerts/read')
+        assert r.status_code == 403
+        assert len(viewer_client.get('/api/alerts').get_json()) == 1

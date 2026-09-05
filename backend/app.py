@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import threading
 import time as _time
@@ -28,8 +29,50 @@ import events
 import assistant
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'inv-secret-key-change-in-prod')
+
+# ── Security configuration ──────────────────────────────────────────────
+# The LAN demo has to keep working with no setup, so the shared development
+# key still exists - but it is refused outright in production and announces
+# itself loudly otherwise, rather than silently making sessions forgeable.
+DEV_SECRET_KEY = 'inv-secret-key-change-in-prod'
+IS_PRODUCTION  = os.environ.get('INVENTORY_ENV', '').strip().lower() == 'production'
+
+_secret = os.environ.get('SECRET_KEY')
+if not _secret:
+    if IS_PRODUCTION:
+        raise RuntimeError(
+            'SECRET_KEY must be set when INVENTORY_ENV=production - refusing to '
+            'start with the shared development key.')
+    _secret = DEV_SECRET_KEY
+    print('[WARN] SECRET_KEY is not set. Using the shared development key, so '
+          'session cookies are forgeable by anyone with this source. Set '
+          'SECRET_KEY before exposing this beyond a trusted LAN.')
+app.secret_key = _secret
 app.permanent_session_lifetime = timedelta(hours=8)
+
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,      # JS cannot read the session cookie
+    SESSION_COOKIE_SAMESITE='Lax',     # blocks cross-site POSTs carrying it
+    # Secure demands HTTPS, and the LAN demo is plain HTTP, so this is opt-in
+    # rather than on by default - turning it on without TLS logs everyone out.
+    SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '').strip().lower() in ('1', 'true', 'yes'),
+    MAX_CONTENT_LENGTH=16 * 1024 * 1024,   # cap CSV import / restore uploads
+)
+
+
+@app.after_request
+def _security_headers(resp):
+    """Baseline response headers.
+
+    No Content-Security-Policy: the dashboard loads Tailwind, Chart.js and
+    jsPDF from public CDNs, so any useful CSP would have to allow them and
+    would mostly be theatre. Vendoring those assets is the real fix and is
+    tracked as an open gap.
+    """
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('Referrer-Policy', 'no-referrer')
+    return resp
 
 # ── Login rate limiting ───────────────────────────────────────────────────────
 _login_attempts: dict = {}   # ip -> {'count': int, 'reset_at': float}
@@ -305,9 +348,13 @@ def add_item():
             'INSERT INTO items (id, name, quantity, unit, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
             (item_id, name, qty, data.get('unit', 'pcs'), data.get('low_stock_threshold', 5))
         )
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({'error': f'An item with ID {item_id} already exists'}), 400
     except Exception as e:
         conn.close()
-        return jsonify({'error': str(e)}), 400
+        print(f'[API] create_item failed: {e}')
+        return jsonify({'error': 'Could not create the item'}), 400
     c.execute('''INSERT INTO transactions
                (item_id, action, quantity_change, previous_quantity, new_quantity,
                 performed_by, note, device_id)
@@ -319,7 +366,7 @@ def add_item():
 
 
 @app.route('/api/items/<item_id>', methods=['PUT'])
-@login_required
+@manager_required
 def update_item(item_id):
     data = request.get_json()
     conn = get_db()
@@ -501,7 +548,7 @@ def mark_all_read():
 
 
 @app.route('/api/alerts/read', methods=['DELETE'])
-@login_required
+@manager_required
 def delete_read_alerts():
     conn = get_db()
     conn.execute('DELETE FROM alerts WHERE is_read = 1')
@@ -562,7 +609,7 @@ def get_tags():
 
 
 @app.route('/api/tags', methods=['POST'])
-@login_required
+@manager_required
 def register_tag():
     data = request.get_json()
     conn = get_db()
@@ -701,9 +748,13 @@ def create_user():
             (username, generate_password_hash(password), data.get('role', 'viewer'))
         )
         conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({'error': 'That username is already taken'}), 400
     except Exception as e:
         conn.close()
-        return jsonify({'error': str(e)}), 400
+        print(f'[API] create_user failed: {e}')
+        return jsonify({'error': 'Could not create the user'}), 400
     conn.close()
     return jsonify({'status': 'ok'}), 201
 
@@ -829,9 +880,13 @@ def create_worker():
         conn.execute('INSERT INTO workers (employee_id, name, role, zone) VALUES (?, ?, ?, ?)',
                      (employee_id, name, role, zone))
         conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({'error': f'Worker {employee_id} is already registered'}), 400
     except Exception as e:
         conn.close()
-        return jsonify({'error': str(e)}), 400
+        print(f'[API] create_worker failed: {e}')
+        return jsonify({'error': 'Could not register the worker'}), 400
     conn.close()
     return jsonify({'status': 'ok'}), 201
 
@@ -1361,7 +1416,16 @@ def export_backup():
     """Download a copy of the live SQLite database."""
     fd, tmp_path = tempfile.mkstemp(suffix='.db')
     os.close(fd)
-    shutil.copy2(DB_PATH, tmp_path)
+    # A plain file copy of a WAL database can miss commits still in the log,
+    # or catch it mid-checkpoint. The backup API takes a consistent snapshot.
+    src = sqlite3.connect(DB_PATH)
+    dst = sqlite3.connect(tmp_path)
+    try:
+        with dst:
+            src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
 
     @after_this_request
     def _cleanup(response):
@@ -1502,4 +1566,8 @@ def assistant_ask():
 if __name__ == '__main__':
     init_db()
     start_mqtt()
-    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False, threaded=True)
+    # debug=True exposes the Werkzeug console, which is remote code execution
+    # for anyone who can reach the port. Off unless explicitly asked for.
+    app.run(host='0.0.0.0', port=5000,
+            debug=os.environ.get('FLASK_DEBUG', '').strip().lower() in ('1', 'true', 'yes'),
+            use_reloader=False, threaded=True)

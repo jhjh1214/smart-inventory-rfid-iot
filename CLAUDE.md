@@ -46,7 +46,10 @@ smart-inventory-rfid-iot/
 │   ├── mfrc522.py           Low-level MFRC522 driver (MicroPython)
 │   └── tag_writer.py        Interactive REPL utility for writing item IDs / worker badges
 ├── firmware/                MicroPython image for reflashing (gitignored, zip-only)
+├── sync-boards.bat          One-click wrapper for tools/sync_boards.py
 ├── tools/
+│   ├── sync_boards.py       Re-points every attached board at this laptop's current IP
+│   ├── board-backups/       Configs pulled off hardware — GITIGNORED (Wi-Fi passwords)
 │   ├── requirements-esp32.txt  esptool + mpremote pins for the toolchain venv
 │   ├── seed_demo.py         opt-in demo data: ledger, tags, cartons, pallets, POs
 │   ├── ui_check.mjs         jsdom checks for the Assistant tab (optional, needs jsdom)
@@ -108,9 +111,16 @@ cd backend; ..\.venv\Scripts\python app.py    # http://localhost:5000
 | `MQTT_PORT` | `1883` | `mqtt_subscriber.py` |
 | `MQTT_USER` / `MQTT_PASSWORD` | empty | broker auth (unused by default) |
 
-**ESP32 side:** edit `esp32/config.py` (`DEVICE_ID`, `READERS`, `WIFI_NETWORKS[].broker` = the
-new PC's LAN IP from `ipconfig`), then upload with `mpremote`. `start.ps1` prints the host's IPs
-at the end for exactly this reason.
+**ESP32 side:** with the boards plugged in over USB, run `.\sync-boards.bat` (or
+`tools\esptoolenv\Scripts\python.exe tools\sync_boards.py`). It rewrites each board's broker
+address to this machine's current IP on the current Wi-Fi network, adds that network if the
+board has never seen it, and moves it first in `WIFI_NETWORKS` so `boot.py` stops blocking on
+absent networks. `DEVICE_ID` and `READERS` are never modified. `--dry-run` previews.
+
+This matters most on the iPhone hotspot, which **re-randomises its subnet on most reconnects** —
+a board's baked-in broker IP goes stale and it fails silently. There is nothing to reserve on
+the phone side. For a board that is not plugged in, edit its `config.py` by hand and upload with
+`mpremote`.
 
 Default logins: `admin/admin123`, `manager/manager123`, `viewer/viewer123`.
 

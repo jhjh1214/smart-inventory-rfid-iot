@@ -127,9 +127,28 @@ ipconfig            # look for IPv4 Address on your active adapter
 
 `start.ps1` also prints every candidate IP after it launches.
 
-**7. Point the ESP32 boards at the new server.** `esp32/config.py` is **gitignored** — it holds
-Wi-Fi passwords in plaintext, because MicroPython has no keystore. On a fresh clone, create it
-first:
+**7. Point the ESP32 boards at the new server.**
+
+If the boards are plugged in over USB, do not edit anything by hand — run:
+
+```powershell
+.\sync-boards.bat            # or: tools\esptoolenv\Scripts\python.exe tools\sync_boards.py
+```
+
+It finds every attached board, works out which Wi-Fi network this machine is on and what its
+current IP is, and rewrites each board's broker address to match — adding the network to the
+board if it has never seen it, and moving it to the front of `WIFI_NETWORKS` so `boot.py` stops
+blocking on networks that are not present. `DEVICE_ID` and `READERS` are never touched, so each
+board keeps its own identity. Add `--dry-run` to see what it would change first.
+
+**This is not optional on a phone hotspot.** iOS re-randomises the hotspot subnet, so the
+broker IP baked into a board goes stale on almost every reconnect, and the boards silently fail
+to reach the broker. There is nothing to reserve on the phone, so the boards get re-pointed
+instead.
+
+For a board that is *not* plugged in, edit its `config.py` by hand. `esp32/config.py` is
+**gitignored** — it holds Wi-Fi passwords in plaintext, because MicroPython has no keystore. On
+a fresh clone, create it first:
 
 ```powershell
 Copy-Item esp32\config.example.py esp32\config.py

@@ -39,6 +39,10 @@ desktop.ini
 config_local.py
 secrets.local.ps1
 
+# Board config pulled off hardware by tools/sync_boards.py — same plaintext
+# Wi-Fi passwords as config.py, so it never gets tracked either.
+tools/board-backups/
+
 # Real ESP32 board config — holds Wi-Fi passwords in plaintext (MicroPython has
 # no keystore). Ship esp32/config.example.py instead; copy it to config.py locally.
 esp32/config.py

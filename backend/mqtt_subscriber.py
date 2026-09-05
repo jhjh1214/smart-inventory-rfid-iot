@@ -376,10 +376,12 @@ def _pallet_factory_written(c, conn, payload):
     if not pallet['tag_uid']:
         c.execute('UPDATE pallets SET tag_uid = ? WHERE id = ?', (tag_uid, pallet_id))
 
-    c.execute('SELECT uid FROM rfid_tags WHERE uid = ?', (tag_uid,))
-    if not c.fetchone():
-        c.execute('''INSERT INTO rfid_tags (uid, item_id, state, tag_level)
-                   VALUES (?, ?, 'tagged', 'pallet')''', (tag_uid, pallet_id))
+    # A pallet's lifecycle state lives in pallets.state, never in rfid_tags:
+    # that table's item_id is a foreign key into items, and a pallet id is not
+    # an item, so inserting here raised FOREIGN KEY constraint failed and no
+    # pallet tag could ever be registered. Cartons are different - they carry a
+    # real item_id, so their rfid_tags rows are valid.
+    c.execute("UPDATE pallets SET state = 'tagged' WHERE id = ?", (pallet_id,))
 
     conn.commit(); conn.close()
     print(f'[MQTT] PALLET TAG {tag_uid} -> {pallet_id}')
@@ -434,6 +436,76 @@ def _carton_factory_exit(c, conn, payload):
                  'tag_level': 'carton', 'unit_count': carton['unit_count']})
 
 
+def _pallet_factory_exit(c, conn, payload):
+    """Pallet leaves the factory floor - transition to in_transit.
+
+    Pallets used to be routed into _carton_factory_exit, which looks the id up
+    in `cartons`. A PLT id is never there, so the scan was dropped with an
+    "unknown carton" log line and the pallet never reached in_transit - which
+    then made it unreceivable at the warehouse gate.
+
+    The cartons riding on the pallet move with it, so their states stay in step,
+    and one factory_exit row is written per distinct SKU on the pallet, matching
+    how _pallet_warehouse_gate groups its work.
+    """
+    pallet_id = (payload.get('item_id') or '').upper()
+    tag_uid   = payload.get('tag_uid')
+    device_id = payload.get('device_id', 'unknown')
+
+    c.execute('SELECT * FROM pallets WHERE id = ?', (pallet_id,))
+    pallet = c.fetchone()
+    if not pallet:
+        print(f'[MQTT] pallet_exit: unknown pallet {pallet_id}')
+        conn.close(); return
+
+    # pallets.state is authoritative; an rfid_tags row only exists for legacy
+    # data, so it is updated when present but never created.
+    c.execute('SELECT state FROM rfid_tags WHERE uid = ?', (tag_uid,))
+    row = c.fetchone()
+    state = row['state'] if row else (pallet['state'] or 'loading')
+    if state not in ('tagged', 'out', 'created', 'loading', 'sealed'):
+        print(f'[MQTT] pallet_exit: {pallet_id} state={state}, skip')
+        conn.close(); return
+    if row:
+        c.execute('UPDATE rfid_tags SET state=?, last_scan=CURRENT_TIMESTAMP WHERE uid=?',
+                  ('in_transit', tag_uid))
+
+    if not pallet['tag_uid']:
+        c.execute('UPDATE pallets SET tag_uid = ? WHERE id = ?', (tag_uid, pallet_id))
+    c.execute("UPDATE pallets SET state = 'in_transit' WHERE id = ?", (pallet_id,))
+
+    c.execute("""SELECT ca.item_id, SUM(ca.unit_count) AS units
+                 FROM cartons ca
+                 JOIN pallet_cartons pc ON pc.carton_id = ca.id
+                 WHERE pc.pallet_id = ?
+                 GROUP BY ca.item_id""", (pallet_id,))
+    totals = [(r['item_id'], r['units'] or 0) for r in c.fetchall()]
+
+    c.execute("""UPDATE cartons SET state = 'in_transit'
+                 WHERE id IN (SELECT carton_id FROM pallet_cartons WHERE pallet_id = ?)""",
+              (pallet_id,))
+
+    for item_id, units in totals:
+        c.execute("""INSERT INTO transactions
+                   (item_id, action, quantity_change, previous_quantity, new_quantity,
+                    tag_uid, note, device_id)
+                   VALUES (?, 'factory_exit', 0,
+                           (SELECT quantity FROM items WHERE id=?),
+                           (SELECT quantity FROM items WHERE id=?),
+                           ?, ?, ?)""",
+                  (item_id, item_id, item_id, tag_uid,
+                   f'pallet:{pallet_id} ({units} units of {item_id})', device_id))
+        _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
+
+    conn.commit(); conn.close()
+    total_units = sum(u for _, u in totals)
+    print(f'[MQTT] PALLET EXIT {pallet_id} ({total_units} units, {len(totals)} SKUs)')
+    events.push({'type': 'pipeline', 'stage': 'in_transit', 'tag_uid': tag_uid,
+                 'item_id': pallet_id,
+                 'item_name': f'Pallet {pallet_id} ({total_units} units)',
+                 'tag_level': 'pallet', 'unit_count': total_units})
+
+
 def _carton_warehouse_gate(c, conn, client, payload):
     """Carton arrives at (or dispatches from) warehouse gate."""
     carton_id = (payload.get('item_id') or '').upper()
@@ -476,7 +548,7 @@ def _carton_warehouse_gate(c, conn, client, payload):
                   (carton['item_id'], units, prev, new_qty,
                    tag_uid, f'carton:{carton_id} ({units} units received)', device_id))
         _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
-        _check_purchase_order(c, carton['item_id'])
+        _check_purchase_order(c, carton['item_id'], units)
         conn.commit(); conn.close()
         print(f'[MQTT] CARTON RECV  {carton_id}  qty +{units} -> {new_qty}')
         events.push({'type': 'pipeline', 'stage': 'received', 'tag_uid': tag_uid,
@@ -583,9 +655,13 @@ def _pallet_warehouse_gate(c, conn, client, payload):
     if not pallet:
         print(f'[MQTT] pallet_gate: unknown pallet {pallet_id}'); conn.close(); return
 
+    # No rfid_tags row is expected for a pallet tag (see
+    # _pallet_factory_written), so pallets.state is the fallback rather than an
+    # assumption of in_transit - which would have let a pallet still being
+    # loaded be received as though it had arrived.
     c.execute('SELECT state FROM rfid_tags WHERE uid=?', (tag_uid,))
     row   = c.fetchone()
-    state = row['state'] if row else 'in_transit'
+    state = row['state'] if row else (pallet['state'] or 'in_transit')
 
     # Load cartons on this pallet
     c.execute('''SELECT ca.* FROM cartons ca
@@ -616,7 +692,7 @@ def _pallet_warehouse_gate(c, conn, client, payload):
                       (item_id, total_units, prev, new_qty, tag_uid,
                        f'pallet:{pallet_id} ({total_units} units of {item_id})', device_id))
             _attach_worker(c, c.lastrowid, device_id, payload.get('worker_id'))
-            _check_purchase_order(c, item_id)
+            _check_purchase_order(c, item_id, total_units)
 
         # Update carton states
         for ca in cartons:
@@ -749,7 +825,7 @@ def _handle_factory_exit(client, payload):
         _carton_factory_exit(c, conn, payload); return
     if _is_pallet(item_id):
         conn = get_db(); c = conn.cursor()
-        _carton_factory_exit(c, conn, payload); return  # pallets treated as cartons at exit
+        _pallet_factory_exit(c, conn, payload); return
 
     conn = get_db()
     c = conn.cursor()
@@ -1059,15 +1135,21 @@ def _handle_return_gate(client, payload):
         conn.close()
 
 
-def _check_purchase_order(c, item_id):
-    """Increment received_qty on the oldest open PO for this item."""
+def _check_purchase_order(c, item_id, qty=1):
+    """Credit `qty` received units against the oldest open PO for this item.
+
+    Callers pass what actually arrived: 1 for a unit scan, the carton's
+    unit_count for a carton, the per-SKU total for a pallet. This used to
+    credit a flat 1 regardless, so a 24-unit carton moved an order by a
+    single unit and a PO could never be fulfilled by bulk receipts.
+    """
     c.execute('''SELECT id, expected_qty, received_qty FROM purchase_orders
                  WHERE item_id = ? AND status IN ('open', 'partial')
                  ORDER BY created_at ASC LIMIT 1''', (item_id,))
     po = c.fetchone()
     if not po:
         return
-    new_recv = po['received_qty'] + 1
+    new_recv = po['received_qty'] + max(int(qty or 0), 0)
     status   = 'complete' if new_recv >= po['expected_qty'] else 'partial'
     c.execute('UPDATE purchase_orders SET received_qty = ?, status = ? WHERE id = ?',
               (new_recv, status, po['id']))

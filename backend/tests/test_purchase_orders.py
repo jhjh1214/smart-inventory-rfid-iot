@@ -228,3 +228,54 @@ class TestPurchaseOrderAutoFulfil:
         pos = manager_client.get('/api/purchase-orders').get_json()
         po = next(p for p in pos if p['id'] == pid)
         assert po['status'] == 'complete'
+
+    def test_carton_receive_credits_every_unit(self, manager_client, test_db):
+        """A 12-unit carton must move the PO by 12, not by 1."""
+        import mqtt_subscriber
+        r = _create_po(manager_client, item_id='item-001', expected_qty=30)
+        pid = r.get_json()['id']
+
+        conn = get_db()
+        conn.execute("INSERT INTO cartons (id, item_id, unit_count, state) "
+                     "VALUES ('CTN-PO-1', 'item-001', 12, 'in_transit')")
+        conn.commit()
+        conn.close()
+
+        class MockClient:
+            def publish(self, *a, **kw): pass
+
+        from unittest.mock import patch
+        with patch('app._fire_webhooks'):
+            mqtt_subscriber._handle_warehouse_gate(MockClient(), {
+                'tag_uid': 'CTN-TAG-1', 'item_id': 'CTN-PO-1', 'device_id': 'gate-01',
+            })
+
+        po = next(p for p in manager_client.get('/api/purchase-orders').get_json()
+                  if p['id'] == pid)
+        assert po['received_qty'] == 12
+
+    def test_bulk_receipt_can_complete_a_po(self, manager_client, test_db):
+        """One carton large enough to fill the order must complete it."""
+        import mqtt_subscriber
+        r = _create_po(manager_client, item_id='item-002', expected_qty=10)
+        pid = r.get_json()['id']
+
+        conn = get_db()
+        conn.execute("INSERT INTO cartons (id, item_id, unit_count, state) "
+                     "VALUES ('CTN-PO-2', 'item-002', 24, 'in_transit')")
+        conn.commit()
+        conn.close()
+
+        class MockClient:
+            def publish(self, *a, **kw): pass
+
+        from unittest.mock import patch
+        with patch('app._fire_webhooks'):
+            mqtt_subscriber._handle_warehouse_gate(MockClient(), {
+                'tag_uid': 'CTN-TAG-2', 'item_id': 'CTN-PO-2', 'device_id': 'gate-01',
+            })
+
+        po = next(p for p in manager_client.get('/api/purchase-orders').get_json()
+                  if p['id'] == pid)
+        assert po['received_qty'] == 24
+        assert po['status'] == 'complete'

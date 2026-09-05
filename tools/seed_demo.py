@@ -225,7 +225,7 @@ def build_world(conn, rng):
     for n, (item_id, _qty) in enumerate(items[:5]):
         expected = rng.choice([24, 48, 60, 100])
         received, status = [(0, 'open'), (expected // 2, 'partial'),
-                            (expected, 'closed')][n % 3]
+                            (expected, 'complete')][n % 3]
         orders.append((item_id, expected, received, status,
                        'Supplier PO for %s' % item_id))
 

@@ -596,3 +596,140 @@ class TestPerformedByAttachment:
         conn.close()
         # system is the default; _attach_worker only overrides when worker found
         assert row is not None
+
+
+class TestPalletFactoryExit:
+    """A pallet at factory exit used to be routed into the carton handler, which
+    looks the id up in `cartons`. A PLT id is never there, so the scan was
+    dropped and the pallet never reached in_transit - leaving it unreceivable at
+    the warehouse gate."""
+
+    def _seed_pallet(self, pallet_id='PLT-T001'):
+        conn = get_db()
+        conn.execute("INSERT INTO pallets (id, state) VALUES (?, 'sealed')", (pallet_id,))
+        conn.execute("INSERT INTO cartons (id, item_id, unit_count, state) "
+                     "VALUES ('CTN-T001', 'item-001', 6, 'created')")
+        conn.execute("INSERT INTO cartons (id, item_id, unit_count, state) "
+                     "VALUES ('CTN-T002', 'item-001', 6, 'created')")
+        conn.execute("INSERT INTO cartons (id, item_id, unit_count, state) "
+                     "VALUES ('CTN-T003', 'item-002', 12, 'created')")
+        for cid in ('CTN-T001', 'CTN-T002', 'CTN-T003'):
+            conn.execute('INSERT INTO pallet_cartons (pallet_id, carton_id) VALUES (?, ?)',
+                         (pallet_id, cid))
+        conn.commit()
+        conn.close()
+
+    def _exit(self, pallet_id='PLT-T001', tag_uid='PLT-TAG-1'):
+        mqtt_subscriber._handle_factory_exit(MockClient(), {
+            'tag_uid': tag_uid, 'item_id': pallet_id, 'device_id': 'factory-exit',
+        })
+
+    def test_pallet_reaches_in_transit(self, test_db):
+        self._seed_pallet()
+        self._exit()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT state, tag_uid FROM pallets WHERE id = 'PLT-T001'")
+        pallet = c.fetchone()
+        conn.close()
+        assert pallet['state'] == 'in_transit'
+        assert pallet['tag_uid'] == 'PLT-TAG-1', 'the scanned tag is bound to it'
+
+    def test_no_rfid_tag_row_is_created_for_a_pallet(self, test_db):
+        # rfid_tags.item_id is a foreign key into items and a pallet id is not
+        # an item, so creating one raises FOREIGN KEY constraint failed.
+        self._seed_pallet()
+        self._exit()
+        assert _get_tag('PLT-TAG-1') is None
+
+    def test_cartons_move_with_the_pallet(self, test_db):
+        self._seed_pallet()
+        self._exit()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT state FROM cartons WHERE id IN ('CTN-T001','CTN-T002','CTN-T003')")
+        assert {r['state'] for r in c.fetchall()} == {'in_transit'}
+        conn.close()
+
+    def test_writes_one_audit_row_per_sku(self, test_db):
+        self._seed_pallet()
+        self._exit()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT item_id, quantity_change FROM transactions
+                     WHERE tag_uid = 'PLT-TAG-1' AND action = 'factory_exit'
+                     ORDER BY item_id""")
+        rows = c.fetchall()
+        conn.close()
+        assert [r['item_id'] for r in rows] == ['item-001', 'item-002']
+        assert all(r['quantity_change'] == 0 for r in rows), 'exit moves no stock'
+
+    def test_unknown_pallet_is_ignored(self, test_db):
+        self._exit(pallet_id='PLT-NOPE', tag_uid='PLT-TAG-X')
+        assert _get_tag('PLT-TAG-X') is None
+
+    def test_already_dispatched_pallet_is_skipped(self, test_db):
+        self._seed_pallet()
+        conn = get_db()
+        conn.execute("UPDATE pallets SET state = 'dispatched' WHERE id = 'PLT-T001'")
+        conn.commit()
+        conn.close()
+
+        self._exit(tag_uid='PLT-TAG-2')
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT state FROM pallets WHERE id = 'PLT-T001'")
+        assert c.fetchone()['state'] == 'dispatched', 'terminal state is not reopened'
+        c.execute("SELECT COUNT(*) FROM transactions WHERE tag_uid = 'PLT-TAG-2'")
+        assert c.fetchone()[0] == 0, 'a skipped scan writes nothing'
+        conn.close()
+
+
+class TestPalletFactoryWritten:
+    """Registering a pallet tag raised FOREIGN KEY constraint failed before:
+    rfid_tags.item_id references items(id) and a pallet id is not an item, so
+    no pallet tag could ever be registered."""
+
+    def _seed(self, pallet_id='PLT-W001'):
+        conn = get_db()
+        conn.execute("INSERT INTO pallets (id, state) VALUES (?, 'loading')", (pallet_id,))
+        conn.commit()
+        conn.close()
+
+    def _write(self, pallet_id='PLT-W001', tag_uid='PLT-WTAG'):
+        conn = get_db()
+        c = conn.cursor()
+        mqtt_subscriber._pallet_factory_written(c, conn, {
+            'tag_uid': tag_uid, 'item_id': pallet_id, 'device_id': 'factory-writer',
+        })
+
+    def test_registers_without_error(self, test_db):
+        self._seed()
+        self._write()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT state, tag_uid FROM pallets WHERE id = 'PLT-W001'")
+        row = c.fetchone()
+        conn.close()
+        assert row['tag_uid'] == 'PLT-WTAG'
+        assert row['state'] == 'tagged'
+
+    def test_creates_no_rfid_tag_row(self, test_db):
+        self._seed()
+        self._write()
+        assert _get_tag('PLT-WTAG') is None
+
+    def test_written_pallet_can_then_exit(self, test_db):
+        # The whole point: registration must leave the pallet in a state the
+        # factory-exit station accepts.
+        self._seed()
+        self._write()
+        mqtt_subscriber._handle_factory_exit(MockClient(), {
+            'tag_uid': 'PLT-WTAG', 'item_id': 'PLT-W001', 'device_id': 'factory-exit',
+        })
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT state FROM pallets WHERE id = 'PLT-W001'")
+        assert c.fetchone()['state'] == 'in_transit'
+        conn.close()

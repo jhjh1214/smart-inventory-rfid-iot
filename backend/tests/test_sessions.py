@@ -214,15 +214,107 @@ class TestWorkerBadgeHandler:
         assert sess is not None
         assert sess['expires'] > before + 200
 
-    def test_unknown_worker_auto_created(self, test_db):
+    def test_unregistered_badge_refused_and_not_enrolled(self, test_db):
+        """A reader must never enrol a worker — the dashboard roster is the only source."""
         mqtt_subscriber._handle_worker_badge('inventory/scan', {
             'tag_uid': 'BADGE-NEW',
             'item_id': 'EMP-NEW999',
             'device_id': 'device-new',
         })
+        assert 'device-new' not in mqtt_subscriber._worker_sessions
         conn = get_db()
         c = conn.cursor()
         c.execute('SELECT id FROM workers WHERE employee_id = ?', ('EMP-NEW999',))
-        row = c.fetchone()
+        assert c.fetchone() is None
+        c.execute("SELECT message FROM alerts WHERE alert_type = 'security'")
+        messages = [r['message'] for r in c.fetchall()]
         conn.close()
-        assert row is not None
+        assert any('UNREGISTERED BADGE' in m and 'EMP-NEW999' in m for m in messages)
+
+    def test_first_tap_binds_uid_to_worker(self, test_db):
+        _seed_worker('EMP-BIND', active=1, name='Bind Worker')
+        mqtt_subscriber._handle_worker_badge('inventory/scan', {
+            'tag_uid': 'BADGE-BIND',
+            'item_id': 'EMP-BIND',
+            'device_id': 'device-bind',
+        })
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT uid FROM workers WHERE employee_id = ?', ('EMP-BIND',))
+        uid = c.fetchone()['uid']
+        conn.close()
+        assert uid == 'BADGE-BIND'
+        assert 'device-bind' in mqtt_subscriber._worker_sessions
+
+    def test_cloned_badge_refused(self, test_db):
+        """Same employee_id on a different physical tag — the clone case."""
+        _seed_worker('EMP-CLONE', active=1, name='Clone Worker')
+        mqtt_subscriber._handle_worker_badge('inventory/scan', {
+            'tag_uid': 'BADGE-REAL',
+            'item_id': 'EMP-CLONE',
+            'device_id': 'device-clone',
+        })
+        assert 'device-clone' in mqtt_subscriber._worker_sessions
+        del mqtt_subscriber._worker_sessions['device-clone']
+
+        mqtt_subscriber._handle_worker_badge('inventory/scan', {
+            'tag_uid': 'BADGE-FAKE',
+            'item_id': 'EMP-CLONE',
+            'device_id': 'device-clone',
+        })
+        assert 'device-clone' not in mqtt_subscriber._worker_sessions
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT message FROM alerts WHERE alert_type = 'security'")
+        messages = [r['message'] for r in c.fetchall()]
+        c.execute('SELECT uid FROM workers WHERE employee_id = ?', ('EMP-CLONE',))
+        uid = c.fetchone()['uid']
+        conn.close()
+        assert any('CLONED BADGE' in m and 'BADGE-FAKE' in m for m in messages)
+        assert uid == 'BADGE-REAL', 'the bound UID must not be overwritten by a clone'
+
+    def test_bound_badge_still_authenticates_on_later_taps(self, test_db):
+        _seed_worker('EMP-AGAIN', active=1, name='Repeat Worker')
+        for _ in range(2):
+            mqtt_subscriber._handle_worker_badge('inventory/scan', {
+                'tag_uid': 'BADGE-AGAIN',
+                'item_id': 'EMP-AGAIN',
+                'device_id': 'device-again',
+            })
+        assert 'device-again' in mqtt_subscriber._worker_sessions
+
+    def test_inactive_worker_raises_security_alert(self, test_db):
+        _seed_worker('EMP-OFF', active=0, name='Off Worker')
+        mqtt_subscriber._handle_worker_badge('inventory/scan', {
+            'tag_uid': 'BADGE-OFF',
+            'item_id': 'EMP-OFF',
+            'device_id': 'device-off',
+        })
+        assert 'device-off' not in mqtt_subscriber._worker_sessions
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT message FROM alerts WHERE alert_type = 'security'")
+        messages = [r['message'] for r in c.fetchall()]
+        conn.close()
+        assert any('INACTIVE BADGE' in m and 'EMP-OFF' in m for m in messages)
+
+    def test_badge_uid_already_bound_to_another_worker_refused(self, test_db):
+        """workers.uid is UNIQUE — one physical tag cannot become a second badge."""
+        _seed_worker('EMP-OWNER', active=1, name='Owner')
+        _seed_worker('EMP-THIEF', active=1, name='Thief')
+        mqtt_subscriber._handle_worker_badge('inventory/scan', {
+            'tag_uid': 'BADGE-SHARED',
+            'item_id': 'EMP-OWNER',
+            'device_id': 'device-owner',
+        })
+        mqtt_subscriber._handle_worker_badge('inventory/scan', {
+            'tag_uid': 'BADGE-SHARED',
+            'item_id': 'EMP-THIEF',
+            'device_id': 'device-thief',
+        })
+        assert 'device-thief' not in mqtt_subscriber._worker_sessions
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT uid FROM workers WHERE employee_id = ?', ('EMP-THIEF',))
+        assert c.fetchone()['uid'] is None
+        conn.close()

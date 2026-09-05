@@ -19,6 +19,7 @@ Security:
 
 import json
 import os
+import sqlite3
 import threading
 import time as _time
 from datetime import datetime
@@ -252,7 +253,14 @@ def _attach_worker(c, txn_id, device_id, payload_worker_id=None):
 
 
 def _handle_worker_badge(source_topic, payload):
-    """Worker taps RFID badge at any station — creates/renews a 5-min session."""
+    """Worker taps RFID badge at any station — creates/renews a 5-min session.
+
+    The roster is managed from the dashboard (POST /api/workers); a reader can
+    never enrol a worker. An unregistered badge, an inactive worker, or a UID
+    that does not match the one bound to the employee_id is refused and raises
+    a security alert — the same treatment an unregistered item tag gets at the
+    factory exit and the warehouse gate.
+    """
     tag_uid     = payload.get('tag_uid')
     employee_id = (payload.get('item_id') or '').upper()
     device_id   = payload.get('device_id', 'unknown')
@@ -265,24 +273,35 @@ def _handle_worker_badge(source_topic, payload):
     worker = c.fetchone()
 
     if not worker:
-        c.execute('INSERT INTO workers (employee_id, name, uid) VALUES (?, ?, ?)',
-                  (employee_id, employee_id, tag_uid))
-        conn.commit()
-        c.execute('SELECT * FROM workers WHERE employee_id = ?', (employee_id,))
-        worker = c.fetchone()
-    elif tag_uid and not worker['uid']:
-        c.execute('UPDATE workers SET uid = ? WHERE employee_id = ?', (tag_uid, employee_id))
+        _deny_badge(c, conn, employee_id, None, tag_uid, device_id,
+                    f'UNREGISTERED BADGE: {employee_id} presented at {device_id}')
+        return
+
+    if not worker['active']:
+        _deny_badge(c, conn, employee_id, worker['name'], tag_uid, device_id,
+                    f'INACTIVE BADGE: {worker["name"]} ({employee_id}) at {device_id}')
+        return
+
+    # UID binding — first tap binds, later taps must present the same physical tag
+    if tag_uid and not worker['uid']:
+        try:
+            c.execute('UPDATE workers SET uid = ? WHERE employee_id = ?', (tag_uid, employee_id))
+        except sqlite3.IntegrityError:
+            # workers.uid is UNIQUE — this physical tag is already another worker's badge
+            _deny_badge(c, conn, employee_id, worker['name'], tag_uid, device_id,
+                        f'REUSED BADGE UID: {tag_uid} is already bound to another '
+                        f'worker, presented as {employee_id} at {device_id}')
+            return
+    elif tag_uid and worker['uid'] != tag_uid:
+        _deny_badge(c, conn, employee_id, worker['name'], tag_uid, device_id,
+                    f'CLONED BADGE: {employee_id} presented UID {tag_uid}, '
+                    f'expected {worker["uid"]} — at {device_id}')
+        return
 
     c.execute('UPDATE workers SET last_seen = CURRENT_TIMESTAMP WHERE employee_id = ?',
               (employee_id,))
     conn.commit()
     conn.close()
-
-    if not worker['active']:
-        print(f'[MQTT] Worker {employee_id} is inactive — access denied at {device_id}')
-        events.push({'type': 'worker_denied', 'employee_id': employee_id,
-                     'name': worker['name'], 'device_id': device_id})
-        return
 
     expires = _time.time() + WORKER_SESSION_TTL
     sess = {
@@ -298,6 +317,16 @@ def _handle_worker_badge(source_topic, payload):
     print(f'[MQTT] Worker authenticated: {worker["name"]} ({employee_id}) @ {device_id}')
     events.push({'type': 'worker_auth', 'employee_id': employee_id,
                  'name': worker['name'], 'role': worker['role'], 'device_id': device_id})
+
+
+def _deny_badge(c, conn, employee_id, name, tag_uid, device_id, message):
+    """Refuse a badge: no session, a security alert row, and a dashboard event.
+
+    Closes `conn` via _security_alert, so callers must return immediately after.
+    """
+    events.push({'type': 'worker_denied', 'employee_id': employee_id,
+                 'name': name or employee_id, 'device_id': device_id})
+    _security_alert(c, conn, None, None, employee_id, tag_uid, message)
 
 
 def get_worker_sessions():

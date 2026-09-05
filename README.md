@@ -427,8 +427,22 @@ badge on any station reader, the backend:
 2. Creates a **5-minute session keyed on `device_id`** (`WORKER_SESSION_TTL = 300`).
 3. Attributes every subsequent transaction from that device to
    `performed_by = "Alice Tan (EMP-001)"` and `worker_id = "EMP-001"`.
-4. Renews the timer on any re-tap. Inactive workers (`active = 0`) are denied and a
-   `worker_denied` event is pushed to the dashboard.
+4. Renews the timer on any re-tap.
+
+A badge is **refused** — no session, a `security` alert row, and a `worker_denied` event on
+the dashboard — in four cases:
+
+| Case | Alert message |
+|------|---------------|
+| Employee ID is not on the roster | `UNREGISTERED BADGE` |
+| Worker is deactivated (`active = 0`) | `INACTIVE BADGE` |
+| Employee ID presented on a different tag UID than the one bound to it | `CLONED BADGE` |
+| Tag UID is already bound to a different employee | `REUSED BADGE UID` |
+
+**UID binding.** A worker registered from the dashboard starts with `uid = NULL`; their first
+badge tap binds the tag's UID to them. Every later tap must present that same physical tag.
+This makes cloning a badge — trivial on MIFARE Classic with the default key — detectable rather
+than silent.
 
 Sessions are mirrored to the `worker_sessions` table so they **survive a backend restart**.
 
@@ -453,7 +467,11 @@ Zone is recorded on the session but is not currently used to reject scans.
 | EMP-004 | David Ng | operator | factory |
 
 Write these to physical tags with `tag_writer.py` (see [Setup](#3-write-worker-badges)).
-An unknown `EMP-` badge is **auto-provisioned** as a new `operator` on first tap.
+
+A reader can never enrol a worker: an `EMP-` badge that is not already on the roster is refused
+and raises a security alert, the same treatment an unregistered *product* tag gets at the
+factory exit and the warehouse gate. Add workers from the dashboard's **Workers** tab
+(`POST /api/workers`, manager or admin) before writing their badge.
 
 ---
 

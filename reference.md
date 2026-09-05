@@ -104,9 +104,21 @@ Legacy mode is automatically detected from the MQTT topic.
 
 1. Worker taps RFID badge at any reader.
 2. ESP32 reads tag UID; if tag data begins with `EMP-`, it is routed as a worker badge (not a product tag).
-3. Backend creates a 5-minute session keyed by `device_id`.
-4. All subsequent product transactions on that device record `performed_by = "Name (EMP-XXX)"`.
-5. Session auto-expires; re-tap renews the timer.
+3. Backend looks the employee ID up in `workers`. An ID that is not on the roster is refused and
+   raises an `UNREGISTERED BADGE` security alert — the reader is never an enrolment channel, so
+   the roster can only be changed from the dashboard by a manager or admin.
+4. The tag UID is checked against the one bound to that employee. The first tap binds it; a later
+   tap presenting a different UID is refused as a `CLONED BADGE`, and a UID already bound to
+   another employee is refused as a `REUSED BADGE UID`. A deactivated worker (`active = 0`) is
+   refused as an `INACTIVE BADGE`.
+5. Backend creates a 5-minute session keyed by `device_id`.
+6. All subsequent product transactions on that device record `performed_by = "Name (EMP-XXX)"`.
+7. Session auto-expires; re-tap renews the timer.
+
+Note that the session is keyed by `device_id`, not by reader role. A board carrying two readers
+(the documented warehouse layout puts `warehouse_gate` and `warehouse_rack` on one ESP32) shares
+one session across both, so a supervisor badging in to rack a pallet also satisfies the
+supervisor check at the gate for the remainder of the TTL.
 
 ### 4.2 Supervisor Dispatch Enforcement
 

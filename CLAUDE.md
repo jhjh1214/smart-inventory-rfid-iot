@@ -175,6 +175,13 @@ blank ──factory_writer──► tagged ──factory_exit──► in_transi
 - **Security states.** A `dispatched` or `consumed` tag scanned anywhere raises a `security`
   alert row and an SSE `security_alert` event. An **unregistered** tag at factory exit or the
   warehouse gate also raises a security alert and is *not* auto-created.
+- **Badges are admitted on the same terms.** `_handle_worker_badge` refuses an `EMP-` badge —
+  no session, a `security` alert, a `worker_denied` event — when the employee ID is not on the
+  roster (`UNREGISTERED BADGE`), the worker is deactivated (`INACTIVE BADGE`), the ID arrives on
+  a tag UID other than the one bound to it (`CLONED BADGE`), or that UID already belongs to
+  someone else (`REUSED BADGE UID`). A reader is never an enrolment channel: the roster changes
+  only through `POST /api/workers` (`@manager_required`). The first tap binds `workers.uid`;
+  every later tap must present the same physical tag.
 - **Supervisor enforcement is detective, not preventive.** Dispatch without an active
   supervisor session raises `UNVERIFIED DISPATCH` — **but the dispatch still completes.** This
   is deliberate (warehouse operations must never deadlock on a badge). Do not "fix" it into a

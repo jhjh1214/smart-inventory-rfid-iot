@@ -379,8 +379,10 @@ README's *Academic Deliverables* and *Specification Gaps to Close* sections.
 
 ## 11. Working preferences for this repo
 
-- Commit and push after every completed task (repo: `origin` → `jhjh1214/smart-inventory-rfid-iot`,
-  branch `main`).
+- Commit and push after every completed task (repo: `origin` →
+  `jhjh1214/smart-inventory-rfid-iot`, branch `main`). The earlier remote was abandoned
+  with the old device on 2026-09-05 and must not be pushed to — its history predates the
+  credential scrub described in §9.
 - `backend/inventory.db` is gitignored — never commit runtime data.
 - Keep `README.md` (setup/features) and `reference.md` (thesis chapters) in sync when behaviour
   changes; they are both graded artefacts.

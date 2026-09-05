@@ -37,6 +37,11 @@ desktop.ini
 
 # Secrets / local config overrides
 config_local.py
+secrets.local.ps1
+
+# Real ESP32 board config — holds Wi-Fi passwords in plaintext (MicroPython has
+# no keystore). Ship esp32/config.example.py instead; copy it to config.py locally.
+esp32/config.py
 .env
 
 # ── Bundled assets (kept in the folder for offline/portable use, never committed) ──

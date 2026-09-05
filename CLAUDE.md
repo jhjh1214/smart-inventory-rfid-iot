@@ -34,7 +34,11 @@ smart-inventory-rfid-iot/
 │   ├── static/css|js/       style.css, dashboard.js (all frontend logic, no build step)
 │   └── tests/               pytest suite, 521 tests
 │   ├── stock_profiles.py    Per-item dispatch policy (consumable/returnable/serialised)
+├── LICENSE                  MIT, © 2026 Tai Ke Ying Dorothy
+├── NOTICE                   Third-party components — see the mfrc522.py caveat
+├── secrets.local.ps1.example  Copy to secrets.local.ps1 (gitignored); start.ps1 sources it
 ├── esp32/
+│   ├── config.example.py    Template — config.py is GITIGNORED (holds Wi-Fi passwords)
 │   ├── config.py            PER-BOARD config: DEVICE_ID, READERS, Wi-Fi, broker, topics
 │   ├── boot.py              Wi-Fi bring-up, selects broker IP from the matched network
 │   ├── main.py              Firmware loop (currently the rack-reader variant, esp32-04)
@@ -275,7 +279,17 @@ notes; the ones most likely to matter first:
 - No CSRF tokens, no cookie hardening (`Secure`/`HttpOnly`/`SameSite`), no security headers.
 - MQTT broker is anonymous and unencrypted; any LAN host can forge scan events.
 - MIFARE Classic with the default key `FFFFFFFFFFFF` and plaintext payloads — tags are clonable.
-- `esp32/config.py` with **real Wi-Fi passwords is committed to git**.
+- ~~`esp32/config.py` with real Wi-Fi passwords is committed to git.~~ **Partly closed, and
+  still requires action.** `config.py` is now gitignored and `config.example.py` ships in its
+  place, so no *new* credential can be committed. But three network passwords were already
+  pushed to the **public** GitHub repo and remain in its history — two entries added in commit
+  d68d962 (2026-06-30, the campus network and a phone hotspot) and one in 1cb0757 (2026-05-22,
+  a home network). The SSIDs are deliberately not repeated here: for at least one of them the
+  password differs from the SSID only by capitalisation, so naming it would re-leak it into a
+  tracked file. Read them from those commits.
+  **Those three passwords must be rotated.** Untracking the file does not remove
+  them from history, and public history is cached, forked and indexed. Scrubbing history
+  (`git filter-repo`) limits further spread but is not a substitute for rotation.
 - Analytics query `action = 'scan_out'` / `'scan_in'`, which the current pipeline never emits —
   forecasting, trends, and ABC are effectively blind to pipeline traffic.
 - `reserved_qty` is written by `/api/items/<id>/reserve` but never consumed by dispatch, and no
@@ -348,10 +362,11 @@ Two claims do not hold, and are the priority work items:
    live demo, not just under test. ABC returns cumulative-Pareto classes over units moved, and
    `detect_scan_anomalies()` flags 25 rows, 22 of them real movements.
 
-   **Demo-day caveat, not a code bug:** `GEMINI_API_KEY` is read from the environment at import
-   time and **nothing in the repo sets it** — not `start.ps1`, and there is no `.env`. Launching
-   via `start.bat` without exporting the key first leaves the Assistant tab reporting itself
-   unavailable. The README documents the export; the one-click path does not perform it.
+   **Demo-day gap, closed.** `GEMINI_API_KEY` is read from the environment at import time, and
+   nothing used to set it on the one-click path. `start.ps1` now dot-sources `secrets.local.ps1`
+   (gitignored; template in `secrets.local.ps1.example`) before spawning the backend, which
+   inherits the variables, and prints whether a key was found. Without the file it still starts
+   and says plainly that the Assistant tab will be unavailable.
 
 Full deltas between abstract v1 and v2, and the complete claim-vs-code table, are in the
 README's *Academic Deliverables* and *Specification Gaps to Close* sections.

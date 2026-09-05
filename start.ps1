@@ -125,6 +125,25 @@ try {
     $ErrorActionPreference = $prevEA
     Write-OK "Dependencies ready"
 
+    # ── Local secrets ─────────────────────────────────────────────────────────
+    # secrets.local.ps1 is gitignored and sets $env:GEMINI_API_KEY (and friends).
+    # Env vars set here are inherited by the backend process spawned below, and
+    # app.py reads them at import time — so without this the Assistant tab comes
+    # up unavailable even though the key is on the machine. Copy
+    # secrets.local.ps1.example to secrets.local.ps1 and fill it in.
+    $secretsFile = Join-Path $PSScriptRoot "secrets.local.ps1"
+    if (Test-Path $secretsFile) {
+        . $secretsFile
+        if ($env:GEMINI_API_KEY -or $env:GOOGLE_API_KEY -or $env:ANTHROPIC_API_KEY) {
+            Write-OK "Assistant credentials loaded from secrets.local.ps1"
+        } else {
+            Write-Warn "secrets.local.ps1 set no API key - the Assistant tab will be unavailable"
+        }
+    } else {
+        Write-Warn "No secrets.local.ps1 - the Assistant tab will report itself unavailable."
+        Write-Warn "  Copy secrets.local.ps1.example to secrets.local.ps1 and add your key."
+    }
+
     $backendCmd = "Set-Location '" + $BACKEND + "'; & '" + $VENV_PY + "' app.py"
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -WindowStyle Normal
 

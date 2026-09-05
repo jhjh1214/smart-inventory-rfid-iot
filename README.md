@@ -127,7 +127,15 @@ ipconfig            # look for IPv4 Address on your active adapter
 
 `start.ps1` also prints every candidate IP after it launches.
 
-**7. Point the ESP32 boards at the new server.** Edit `esp32/config.py` so the `broker` field of
+**7. Point the ESP32 boards at the new server.** `esp32/config.py` is **gitignored** — it holds
+Wi-Fi passwords in plaintext, because MicroPython has no keystore. On a fresh clone, create it
+first:
+
+```powershell
+Copy-Item esp32\config.example.py esp32\config.py
+```
+
+Then edit `esp32/config.py` so the `broker` field of
 the matching `WIFI_NETWORKS` entry is that IP, then re-upload `config.py` to **every board**:
 
 ```powershell
@@ -846,6 +854,7 @@ smart-inventory-rfid-iot/
 │   └── tests/                  pytest suite — 389 tests across 13 modules
 │
 ├── esp32/
+│   ├── config.example.py       Template — copy to config.py and fill in (config.py is gitignored)
 │   ├── config.py               Per-board: DEVICE_ID, READERS, Wi-Fi list, broker, topics
 │   ├── boot.py                 Wi-Fi bring-up, selects broker IP per matched network
 │   ├── main.py                 Rack-reader firmware (esp32-04 variant)

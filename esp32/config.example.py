@@ -1,5 +1,9 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  DEVICE CONFIGURATION — edit these two sections per ESP32 board
+#
+#  TEMPLATE. Copy to  esp32/config.py  and fill in your own Wi-Fi credentials.
+#  config.py is gitignored because it holds real network passwords in plaintext
+#  (MicroPython has no keystore) — never commit it.
 # ══════════════════════════════════════════════════════════════════════════════
 
 DEVICE_ID = 'esp32-04'
@@ -9,24 +13,16 @@ DEVICE_ID = 'esp32-04'
 # Find it by running  ipconfig  in Command Prompt on the laptop.
 WIFI_NETWORKS = [
     {
-        'ssid':     '***REMOVED***',
-        'password': '***REMOVED***',
-        'broker':   '10.22.246.85',
+        'ssid':     'YOUR-WIFI-SSID',
+        'password': 'YOUR-WIFI-PASSWORD',
+        'broker':   '192.168.0.100',      # the PC running Mosquitto, from ipconfig
     },
-    {
-        'ssid':     'Tong@unifi',
-        'password': '***REMOVED***',
-        'broker':   '192.168.0.115',
-    },
-    {
-        'ssid':     'iPhone 16 Pro Max',
-        'password': '***REMOVED***',
-        'broker':   '172.25.48.137',
-    }
+    # Add one entry per network the boards may meet; boot.py tries them in order
+    # and takes the broker IP from whichever connects.
 ]
 
 # Fallback broker — overwritten at boot by whichever WiFi connects above
-MQTT_BROKER = '10.22.246.85'
+MQTT_BROKER = '192.168.0.100'
 MQTT_PORT   = 1883
 
 # ── Multi-reader layout (used when running full pipeline firmware) ────────────

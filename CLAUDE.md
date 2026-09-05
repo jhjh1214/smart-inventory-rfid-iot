@@ -279,17 +279,21 @@ notes; the ones most likely to matter first:
 - No CSRF tokens, no cookie hardening (`Secure`/`HttpOnly`/`SameSite`), no security headers.
 - MQTT broker is anonymous and unencrypted; any LAN host can forge scan events.
 - MIFARE Classic with the default key `FFFFFFFFFFFF` and plaintext payloads — tags are clonable.
-- ~~`esp32/config.py` with real Wi-Fi passwords is committed to git.~~ **Partly closed, and
-  still requires action.** `config.py` is now gitignored and `config.example.py` ships in its
-  place, so no *new* credential can be committed. But three network passwords were already
-  pushed to the **public** GitHub repo and remain in its history — two entries added in commit
-  d68d962 (2026-06-30, the campus network and a phone hotspot) and one in 1cb0757 (2026-05-22,
-  a home network). The SSIDs are deliberately not repeated here: for at least one of them the
-  password differs from the SSID only by capitalisation, so naming it would re-leak it into a
-  tracked file. Read them from those commits.
-  **Those three passwords must be rotated.** Untracking the file does not remove
-  them from history, and public history is cached, forked and indexed. Scrubbing history
-  (`git filter-repo`) limits further spread but is not a substitute for rotation.
+- ~~`esp32/config.py` with real Wi-Fi passwords is committed to git.~~ **Closed here; one
+  action still outstanding.** Three fixes, in order of when they applied:
+  1. `config.py` is gitignored and `config.example.py` ships in its place, so no *new*
+     credential can be committed.
+  2. All 88 commits were rewritten with `git filter-repo` on 2026-09-05, replacing every
+     password with `***REMOVED***`. `FINDINGS.md` was caught by the same pass: it named the
+     campus SSID, whose password differs from the SSID only by capitalisation, so the SSID
+     *was* the password. Verified afterwards: zero matches across every blob in every commit.
+     Commit hashes from before that date (in older notes, or in the abandoned repo) no longer
+     resolve.
+  3. History was published from an earlier account before the scrub. That account and repo were
+     abandoned when the device changed; this repo now lives under `jhjh1214`.
+  **The three passwords still need rotating.** The scrub protects this repo's history, but the
+  old public repo was live from 2026-05-22, and public history is cached, forked and indexed.
+  Rotation is the only real remedy; one of the three is a campus network.
 - Analytics query `action = 'scan_out'` / `'scan_in'`, which the current pipeline never emits —
   forecasting, trends, and ABC are effectively blind to pipeline traffic.
 - `reserved_qty` is written by `/api/items/<id>/reserve` but never consumed by dispatch, and no

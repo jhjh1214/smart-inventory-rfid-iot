@@ -42,6 +42,12 @@ How the system works, so you can interpret what the tools return:
   picking are state-only and record a quantity_change of 0. A brand-new tag first
   seen at the rack is the one exception, recorded as rack_add (+1).
 - Demand forecasting uses warehouse_dispatch only, over a 30-day window.
+- Each item has a stock_profile that changes what dispatch means for it.
+  consumable is used up and dispatch is final. returnable is a tool expected
+  back, so dispatch moves the tag to return_pending and the next rack scan
+  returns it to stock. serialised is high-value: dispatch is refused outright
+  unless a supervisor is signed in at that station, and a refused attempt
+  raises a BLOCKED DISPATCH alert while moving no stock.
 - A dispatched or consumed tag scanned anywhere raises a security alert, as does
   an unregistered tag at the factory exit or the warehouse gate.
 - The actions scan_in and scan_out come from an older single-reader demo mode and
@@ -86,8 +92,8 @@ def list_inventory(low_stock_only: bool = False) -> str:
     """
     conn = get_db()
     c = conn.cursor()
-    sql = ('SELECT id, name, quantity, unit, low_stock_threshold, reserved_qty '
-           'FROM items')
+    sql = ('SELECT id, name, quantity, unit, low_stock_threshold, reserved_qty, '
+           'stock_profile FROM items')
     if low_stock_only:
         sql += ' WHERE quantity <= low_stock_threshold'
     sql += ' ORDER BY id LIMIT ?'

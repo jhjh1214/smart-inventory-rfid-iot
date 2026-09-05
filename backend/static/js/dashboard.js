@@ -95,6 +95,7 @@ let _auditFilter  = 'all';
   clockTick();
   setInterval(clockTick, 1000);
 
+  await fetchStockProfiles();
   _kpiLoading();
   await Promise.all([refreshSummary(), fetchTransactions(), fetchItems()]);
   await Promise.all([fetchAnalytics(), fetchTags(), fetchRackInventory(), fetchAlerts()]);
@@ -656,7 +657,7 @@ function renderItemsTable(items) {
     const btn = isManager
       ? `<button onclick="openAddItemModal()" class="btn-primary text-sm">+ Add first item</button>`
       : '';
-    tbody.innerHTML = _tableEmpty(7, 'box', 'No inventory items yet',
+    tbody.innerHTML = _tableEmpty(8, 'box', 'No inventory items yet',
       'Add your first item to start tracking stock levels and receive alerts.', btn);
     return;
   }
@@ -680,6 +681,7 @@ function renderItemsTable(items) {
           <div class="font-medium text-gray-800">${esc(item.name)}</div>
           <div class="text-xs text-gray-400">${esc(item.id)}</div>
         </td>
+        <td class="px-4 py-3 text-center">${profileBadge(item.stock_profile)}</td>
         <td class="px-4 py-3 text-right font-mono font-semibold text-gray-700">
           ${item.quantity} <span class="text-xs font-normal text-gray-400">${esc(item.unit)}</span>
         </td>
@@ -691,6 +693,39 @@ function renderItemsTable(items) {
         <td class="px-4 py-3 text-center text-xs text-gray-400">${fmtDate(item.updated_at)}</td>
         <td class="px-4 py-3 text-center">${actions}</td>
       </tr>`;
+  }).join('');
+}
+
+// Stock profiles change how the gate treats an item on dispatch. The
+// catalogue comes from /api/stock-profiles so the wording lives server-side.
+let _stockProfiles = {};
+
+async function fetchStockProfiles() {
+  try {
+    const list = await fetch('/api/stock-profiles').then(r => r.json());
+    _stockProfiles = Object.fromEntries(list.map(p => [p.name, p]));
+  } catch { _stockProfiles = {}; }
+}
+
+function profileBadge(name) {
+  const key  = name || 'consumable';
+  const meta = _stockProfiles[key];
+  const cls  = { consumable: 'badge-neutral',
+                 returnable: 'badge-info',
+                 serialised: 'badge-purple' }[key] || 'badge-neutral';
+  const label = meta ? meta.label : key;
+  const tip   = meta ? meta.description : '';
+  return `<span class="badge ${cls}" title="${esc(tip)}">${esc(label)}</span>`;
+}
+
+function profileOptions(selected) {
+  const names = Object.keys(_stockProfiles).length
+    ? Object.keys(_stockProfiles) : ['consumable', 'returnable', 'serialised'];
+  return names.map(n => {
+    const meta = _stockProfiles[n];
+    const label = meta ? `${meta.label} — ${meta.description}` : n;
+    return `<option value="${esc(n)}"${n === (selected || 'consumable') ? ' selected' : ''}>`
+         + `${esc(label)}</option>`;
   }).join('');
 }
 
@@ -949,6 +984,8 @@ function openEditModal(item) {
   form.quantity.value            = item.quantity;
   form.unit.value                = item.unit;
   form.low_stock_threshold.value = item.low_stock_threshold;
+  const profile = document.getElementById('edit-item-profile');
+  if (profile) profile.innerHTML = profileOptions(item.stock_profile);
   openModal('modal-edit-item');
 }
 

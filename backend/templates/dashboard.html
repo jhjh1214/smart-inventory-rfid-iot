@@ -350,6 +350,7 @@
             <thead class="table-head sticky-head">
               <tr>
                 <th class="th text-left">Item</th>
+                <th class="th text-center">Profile</th>
                 <th class="th text-right">Qty</th>
                 <th class="th text-right">Reserved</th>
                 <th class="th text-center">Threshold</th>
@@ -1032,6 +1033,12 @@
         <div>
           <label class="form-label">Low Stock Threshold</label>
           <input name="low_stock_threshold" type="number" min="0" class="form-input" />
+        </div>
+        <div>
+          <label class="form-label">Stock Profile</label>
+          <select name="stock_profile" id="edit-item-profile" class="form-input"></select>
+          <p class="text-xs text-slate-400 mt-1">How the warehouse gate treats this item
+             when it is dispatched.</p>
         </div>
         <div class="flex gap-2 pt-2">
           <button type="submit" class="flex-1 btn-primary">Save Changes</button>

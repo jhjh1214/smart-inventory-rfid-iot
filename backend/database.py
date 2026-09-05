@@ -189,6 +189,10 @@ def init_db():
         (13, "ALTER TABLE rfid_tags ADD COLUMN unit_count INTEGER DEFAULT 1"),
         # Direct worker attribution on transactions (complements performed_by string)
         (14, "ALTER TABLE transactions ADD COLUMN worker_id TEXT"),
+        # How the pipeline should treat this class of goods. Defaults to
+        # 'consumable', which is the behaviour every item had before, so this
+        # migration changes nothing until an item is reclassified.
+        (15, "ALTER TABLE items ADD COLUMN stock_profile TEXT DEFAULT 'consumable'"),
     ]
     for version, sql in _MIGRATIONS:
         c.execute('SELECT 1 FROM schema_version WHERE version = ?', (version,))

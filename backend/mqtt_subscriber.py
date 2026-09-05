@@ -27,6 +27,7 @@ import paho.mqtt.client as mqtt
 
 from database import get_db
 import events
+import stock_profiles
 
 BROKER        = os.environ.get('MQTT_BROKER', '127.0.0.1')
 PORT          = int(os.environ.get('MQTT_PORT', 1883))
@@ -154,7 +155,7 @@ def _on_message(client, userdata, msg):
 def _get_tag_with_item(c, tag_uid):
     c.execute('''
         SELECT t.*, i.name AS item_name, i.quantity,
-               i.low_stock_threshold, i.unit
+               i.low_stock_threshold, i.unit, i.stock_profile
         FROM rfid_tags t JOIN items i ON t.item_id = i.id
         WHERE t.uid = ?
     ''', (tag_uid,))
@@ -929,7 +930,17 @@ def _handle_warehouse_gate(client, payload):
     elif state in ('received', 'racked', 'picked', 'returned', 'in'):
         device_id = payload.get('device_id', 'unknown')
         worker    = _get_current_worker(device_id)
-        if not worker or worker['role'] != 'supervisor':
+        rule      = stock_profiles.policy(tag['stock_profile'])
+        supervised = bool(worker and worker['role'] == 'supervisor')
+
+        if not supervised:
+            if rule['require_supervisor']:
+                # Serialised stock is the one class where this is preventive
+                # rather than detective - nothing moves and no quantity changes.
+                _security_alert(c, conn, client, item_id, tag['item_name'], tag_uid,
+                                f'BLOCKED DISPATCH: {tag["item_name"]} is serialised and '
+                                f'{device_id} has no active supervisor session')
+                return
             c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
                       (item_id, 'security',
                        f'UNVERIFIED DISPATCH: tag {tag_uid} ({tag["item_name"]}) dispatched '
@@ -943,19 +954,26 @@ def _handle_warehouse_gate(client, payload):
         c.execute('SELECT quantity FROM items WHERE id = ?', (item_id,))
         new_qty = c.fetchone()['quantity']
         prev    = new_qty + 1  # approximate; could be 0 if was 0
+        # A returnable asset goes straight to return_pending, so scanning it
+        # back in at the rack closes the loop with no admin step. The action
+        # stays warehouse_dispatch either way: the goods did leave, and the
+        # demand forecast counts them.
+        next_state = 'dispatched' if rule['dispatch_terminal'] else 'return_pending'
         c.execute('UPDATE rfid_tags SET state = ?, last_scan = CURRENT_TIMESTAMP WHERE uid = ?',
-                  ('dispatched', tag_uid))
+                  (next_state, tag_uid))
         c.execute('''INSERT INTO transactions
-                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id)
-                   VALUES (?, 'warehouse_dispatch', -1, ?, ?, ?, ?)''',
-                  (item_id, prev, new_qty, tag_uid, device_id))
+                   (item_id, action, quantity_change, previous_quantity, new_quantity, tag_uid, device_id, note)
+                   VALUES (?, 'warehouse_dispatch', -1, ?, ?, ?, ?, ?)''',
+                  (item_id, prev, new_qty, tag_uid, device_id,
+                   None if rule['dispatch_terminal'] else 'returnable - awaiting return'))
         _attach_worker(c, c.lastrowid, device_id)
         _low_stock_check(c, client, item_id, tag['item_name'],
                          new_qty, tag['low_stock_threshold'], tag['unit'])
         conn.commit()
         conn.close()
-        print(f'[MQTT] DISPATCHED  {tag_uid} -> {tag["item_name"]}  qty ->{new_qty}')
-        events.push({'type': 'pipeline', 'stage': 'dispatched',
+        print(f'[MQTT] DISPATCHED  {tag_uid} -> {tag["item_name"]}  qty ->{new_qty}'
+              f'  ({next_state})')
+        events.push({'type': 'pipeline', 'stage': next_state,
                      'tag_uid': tag_uid, 'item_id': item_id,
                      'item_name': tag['item_name'], 'quantity': new_qty})
 

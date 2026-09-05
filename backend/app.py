@@ -27,6 +27,7 @@ from mqtt_subscriber import (start_mqtt, get_status as mqtt_status,
                               TOPIC_FACTORY_JOB)
 import events
 import assistant
+import stock_profiles
 
 app = Flask(__name__)
 
@@ -345,8 +346,11 @@ def add_item():
     c = conn.cursor()
     try:
         c.execute(
-            'INSERT INTO items (id, name, quantity, unit, low_stock_threshold) VALUES (?, ?, ?, ?, ?)',
-            (item_id, name, qty, data.get('unit', 'pcs'), data.get('low_stock_threshold', 5))
+            'INSERT INTO items (id, name, quantity, unit, low_stock_threshold, stock_profile) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (item_id, name, qty, data.get('unit', 'pcs'),
+             data.get('low_stock_threshold', 5),
+             stock_profiles.normalise(data.get('stock_profile')))
         )
     except sqlite3.IntegrityError:
         conn.close()
@@ -392,7 +396,12 @@ def update_item(item_id):
                       (item_id, new_qty - prev_qty, prev_qty, new_qty,
                        _dashboard_actor(), 'Manual adjustment'))
 
-    allowed = ['name', 'quantity', 'unit', 'low_stock_threshold']
+    if 'stock_profile' in data and not stock_profiles.is_valid(data['stock_profile']):
+        conn.close()
+        return jsonify({'error': 'stock_profile must be one of: %s'
+                                 % ', '.join(stock_profiles.NAMES)}), 400
+
+    allowed = ['name', 'quantity', 'unit', 'low_stock_threshold', 'stock_profile']
     fields  = [f for f in allowed if f in data]
     if fields:
         set_clause = ', '.join(f'{f} = ?' for f in fields)
@@ -1521,6 +1530,13 @@ def import_items_csv():
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok', 'created': created, 'updated': updated, 'errors': errors})
+
+
+@app.route('/api/stock-profiles')
+@login_required
+def get_stock_profiles():
+    """The profile catalogue, so the dashboard need not hardcode it."""
+    return jsonify(stock_profiles.describe())
 
 
 # ── LLM assistant ────────────────────────────────────────────────────────────

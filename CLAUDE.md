@@ -35,7 +35,7 @@ smart-inventory-rfid-iot/
 │   └── tests/               pytest suite, 521 tests
 │   ├── stock_profiles.py    Per-item dispatch policy (consumable/returnable/serialised)
 ├── LICENSE                  MIT, © 2026 Tai Ke Ying Dorothy
-├── NOTICE                   Third-party components — see the mfrc522.py caveat
+├── NOTICE                   CDN/PyPI third-party components; all source here is original
 ├── secrets.local.ps1.example  Copy to secrets.local.ps1 (gitignored); start.ps1 sources it
 ├── esp32/
 │   ├── config.example.py    Template — config.py is GITIGNORED (holds Wi-Fi passwords)

@@ -24,7 +24,7 @@ same Wi-Fi.
 ```
 smart-inventory-rfid-iot/
 ├── backend/
-│   ├── app.py               Flask app — ~90 REST endpoints, RBAC decorators, SSE, webhooks
+│   ├── app.py               Flask app — 69 REST endpoints, RBAC decorators, SSE, webhooks
 │   ├── database.py          SQLite schema, versioned migrations, demo seeds
 │   ├── mqtt_subscriber.py   MQTT client + the pipeline state machine (the system's core)
 │   ├── analytics.py         Forecasting, EOQ, ABC, anomaly detection, pipeline summary
@@ -121,6 +121,16 @@ This matters most on the iPhone hotspot, which **re-randomises its subnet on mos
 a board's baked-in broker IP goes stale and it fails silently. There is nothing to reserve on
 the phone side. For a board that is not plugged in, edit its `config.py` by hand and upload with
 `mpremote`.
+
+**Verified board layout (2026-09-06):** `esp32-02` = `factory_exit` (CS 22); `esp32-03` =
+`warehouse_gate` (CS 22) **and** `warehouse_rack` (CS 5, `A1`) on one board. `esp32-01`
+(writer) and `esp32-04` (spare rack) are documented but were not attached and remain
+unverified. Note the gate and rack share a board — the concrete reason session scoping in §5 is
+per-station rather than per-device.
+
+**COM port numbers are not stable identifiers.** A board that enumerated as COM5 can come back
+as COM7 after a replug, and two boards can swap. Always read `DEVICE_ID` off a board before
+writing to it; `sync_boards.py` does this automatically.
 
 Default logins: `admin/admin123`, `manager/manager123`, `viewer/viewer123`.
 
@@ -275,8 +285,9 @@ Flag these if relevant, but do not silently change them:
   deleted item. This is intentional: the audit trail outlives the catalogue record.
 - Legacy `inventory/scan` handling coexists with the pipeline handlers.
 - `quantity` is clamped with `MAX(0, quantity - N)` so it can never go negative.
-- `main.py` on `esp32-04` deliberately has no worker auth (`REQUIRE_WORKER_AUTH = False`) — a
-  hardware-availability constraint, documented in the README.
+- `main.py` on the rack variant deliberately has no worker auth (`REQUIRE_WORKER_AUTH = False`)
+  — a hardware-availability constraint, documented in the README. Note the boards in the field
+  run an older `config.py` that does not define `REQUIRE_WORKER_AUTH` at all.
 
 ---
 

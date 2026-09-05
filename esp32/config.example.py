@@ -25,16 +25,18 @@ WIFI_NETWORKS = [
 MQTT_BROKER = '192.168.0.100'
 MQTT_PORT   = 1883
 
-# ── Multi-reader layout (used when running full pipeline firmware) ────────────
+# ── Multi-reader layout ───────────────────────────────────────────────────────
 #
-#  ESP32 #1  Manufacturing (2 readers):
-#    CS=22  factory_writer    CS=5   factory_exit
+#  Readers share one SPI bus; each needs its own CS pin. As built:
 #
-#  ESP32 #2  Warehouse (2 readers):
-#    CS=22  warehouse_gate    CS=5   warehouse_rack  rack_location='A1'
+#    esp32-01  CS=22  factory_writer                      (not verified)
+#    esp32-02  CS=22  factory_exit                        verified 2026-09-06
+#    esp32-03  CS=22  warehouse_gate                      verified 2026-09-06
+#              CS=5   warehouse_rack  rack_location='A1'  verified 2026-09-06
+#    esp32-04  CS=22  warehouse_rack                      spare, not verified
 #
-#  ESP32 #3  Returns desk (1 reader):
-#    CS=22  return_gate
+#  The gate and the rack sit on one board, which is why badge sessions are
+#  scoped to a station rather than to a device_id.
 #
 READERS = [
     {'role': 'warehouse_rack', 'cs': 22, 'rack_location': 'A1'},

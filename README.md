@@ -236,11 +236,11 @@ Get-PnpDevice -Class Ports | Where-Object {$_.Status -eq 'OK'} | Select-Object F
 ## System Architecture
 
 ```
- ESP32 #1          ESP32 #2          ESP32 #3          ESP32 #4
- esp32-01          esp32-02          esp32-03          esp32-04
-[factory_writer]  [factory_exit]  [warehouse_gate]  [warehouse_rack]
-      │                 │                 │                 │
-      └─────────────────┴─────────────────┴─────────────────┘
+ esp32-01           esp32-02          esp32-03                      esp32-04
+[factory_writer]   [factory_exit]   [warehouse_gate + rack]        [warehouse_rack]
+ (not verified)     VERIFIED         VERIFIED, 2 readers            (spare / not verified)
+      │                  │                  │                            │
+      └──────────────────┴──────────────────┴────────────────────────────┘
                                   │
                         MQTT (Mosquitto) — LAN port 1883
                                   │
@@ -326,26 +326,35 @@ RST         →   3.3V  (hardwired HIGH — no software reset needed)
 Item identifiers are stored in **MIFARE block 8**, 16 bytes, zero-padded, authenticated with
 key A `FF FF FF FF FF FF` (`RFID_BLOCK` / `RFID_KEY` in `config.py`).
 
-### 4-Board Reference Layout
+### Board Layout
 
+Read off the physical boards on 2026-09-06 with `tools/sync_boards.py`. Only the two boards
+attached that day are confirmed; the other two rows are the intended layout and are **not yet
+verified against hardware**.
+
+| Board | Readers | CS | Status |
+|-------|---------|----|--------|
+| `esp32-01` | `factory_writer` — writes item_id to blank tags | 22 | Not verified |
+| `esp32-02` | `factory_exit` — products leaving the manufacturing floor | 22 | **Verified** |
+| `esp32-03` | `warehouse_gate` — receives in-transit stock **or** dispatches racked stock | 22 | **Verified** |
+| `esp32-03` | `warehouse_rack` — shelf placement, pick, return finalisation (`rack_location='A1'`) | 5 | **Verified** |
+| `esp32-04` | `warehouse_rack` — spare single-reader rack variant | 22 | Not verified |
+
+**The gate and the rack share one board.** `esp32-03` carries both on a shared SPI bus with a
+CS line each, so the whole quantity-moving cycle — receive → rack → pick → dispatch — runs on a
+single ESP32. This is also why badge sessions are scoped to a station rather than a board: see
+*Worker RFID Authentication*.
+
+To confirm what is actually attached at any time:
+
+```powershell
+tools\esptoolenv\Scripts\python.exe tools\sync_boards.py --dry-run
 ```
-ESP32 #1 (esp32-01) — Factory Writer
-  CS=22  →  factory_writer   writes item_id to blank tags (auto-cycles demo items)
 
-ESP32 #2 (esp32-02) — Factory Exit
-  CS=22  →  factory_exit     scans products leaving the manufacturing floor
-
-ESP32 #3 (esp32-03) — Warehouse Gate
-  CS=22  →  warehouse_gate   smart gate: receives in-transit stock OR dispatches racked stock
-
-ESP32 #4 (esp32-04) — Warehouse Rack
-  CS=22  →  warehouse_rack   shelf placement, shelf removal (pick), and return finalisation
-```
-
-`config.py` supports **multiple readers per board** via the `READERS` list (shared SPI bus, one
-CS line each). The `main.py` currently in the repository is the **single-reader rack variant**
-for `esp32-04`; the multi-role firmware for boards 1–3 uses the same `config.py` contract.
-All boards share `rfid_reader.py`, `mfrc522.py`, and `boot.py` — only `config.py` differs.
+`config.py` supports **multiple readers per board** via the `READERS` list. The `main.py`
+currently in the repository is the **single-reader rack variant**; the multi-role firmware that
+`esp32-03` runs uses the same `config.py` contract but is not committed. All boards share
+`rfid_reader.py`, `mfrc522.py`, and `boot.py` — only `config.py` differs.
 
 > **Worker authentication** is implemented in both backend and firmware but is disabled on
 > board 4 (`REQUIRE_WORKER_AUTH = False`) due to reader-capacity constraints. Re-enable per

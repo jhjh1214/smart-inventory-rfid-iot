@@ -32,7 +32,7 @@ smart-inventory-rfid-iot/
 │   ├── inventory.db         Runtime DB — gitignored, created on first run
 │   ├── templates/           login.html, dashboard.html (9-tab SPA shell)
 │   ├── static/css|js/       style.css, dashboard.js (all frontend logic, no build step)
-│   └── tests/               pytest suite, 513 tests
+│   └── tests/               pytest suite, 521 tests
 │   ├── stock_profiles.py    Per-item dispatch policy (consumable/returnable/serialised)
 ├── esp32/
 │   ├── config.py            PER-BOARD config: DEVICE_ID, READERS, Wi-Fi, broker, topics
@@ -130,7 +130,7 @@ Default logins: `admin/admin123`, `manager/manager123`, `viewer/viewer123`.
 6. **Escape all interpolated values in `dashboard.js`** with the `esc()` helper before putting
    them in `innerHTML`. This is currently consistent across all ~70 sites — keep it that way.
 7. **Migrations are append-only.** Add a new `(version, sql)` tuple to `_MIGRATIONS` in
-   `database.py`; never renumber or edit an existing one. Currently 15 migrations.
+   `database.py`; never renumber or edit an existing one. Currently 16 migrations.
 8. **`get_db()` returns a fresh connection per call** with WAL, `busy_timeout=3000`, and
    `foreign_keys=ON`. Handlers open, use, commit, close. There is no connection pool and no ORM.
 
@@ -182,6 +182,15 @@ blank ──factory_writer──► tagged ──factory_exit──► in_transi
   someone else (`REUSED BADGE UID`). A reader is never an enrolment channel: the roster changes
   only through `POST /api/workers` (`@manager_required`). The first tap binds `workers.uid`;
   every later tap must present the same physical tag.
+- **Sessions are scoped to a station, not a board.** `STATION_BY_TOPIC` maps the source topic to
+  a station name, stored on the session and persisted (migration 16). `_supervisor_at(device_id,
+  station)` requires a supervisor session opened **at that station**, so a badge tap at
+  `warehouse_rack` no longer authorises dispatch at `warehouse_gate` on the same ESP32. Scan
+  *attribution* (`_attach_worker`) stays board-scoped on purpose — the worker who badged in at a
+  board is physically at its readers.
+- **`workers.zone` is now checked.** `ZONE_BY_STATION` maps station → zone; a badge tapped
+  outside the worker's zone raises `ZONE VIOLATION` **and still grants the session**. Detective,
+  like the supervisor rule. Zone `general` is in scope everywhere.
 - **Supervisor enforcement is detective, not preventive.** Dispatch without an active
   supervisor session raises `UNVERIFIED DISPATCH` — **but the dispatch still completes.** This
   is deliberate (warehouse operations must never deadlock on a badge). Do not "fix" it into a
@@ -215,7 +224,7 @@ A carton scan moves `unit_count` units; a pallet scan moves every carton on it, 
 
 ## 7. Known state of the test suite
 
-`python -m pytest` → **513 passed, 0 failed** (~4.7 min). The ten stale failures recorded in
+`python -m pytest` → **521 passed, 0 failed** (~4.6 min). The ten stale failures recorded in
 earlier audits were fixed **in the tests only** — no product code changed:
 
 | Was failing | How it was fixed |
@@ -242,6 +251,9 @@ Do not "fix the code" to make a test pass — fix the test, and only when asked.
 
 Flag these if relevant, but do not silently change them:
 
+- A zone violation alerts but still grants the session, for the same reason dispatch proceeds
+  without a supervisor. Making it preventive is a one-line change in `_handle_worker_badge` —
+  ask first.
 - Dispatch proceeds without a supervisor (alert only) — see §5. The one exception is an item
   whose `stock_profile` is `serialised`, where the check is preventive and the dispatch is
   refused outright. Everything else keeps the detective behaviour on purpose.

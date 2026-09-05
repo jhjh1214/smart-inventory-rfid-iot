@@ -115,10 +115,15 @@ Legacy mode is automatically detected from the MQTT topic.
 6. All subsequent product transactions on that device record `performed_by = "Name (EMP-XXX)"`.
 7. Session auto-expires; re-tap renews the timer.
 
-Note that the session is keyed by `device_id`, not by reader role. A board carrying two readers
-(the documented warehouse layout puts `warehouse_gate` and `warehouse_rack` on one ESP32) shares
-one session across both, so a supervisor badging in to rack a pallet also satisfies the
-supervisor check at the gate for the remainder of the TTL.
+The session records the station it was opened at (`STATION_BY_TOPIC`), and the supervisor
+dispatch check requires a supervisor session opened **at the gate**. A board carrying two
+readers therefore no longer leaks authority between them: badging in to rack a pallet does not
+satisfy the gate's check. Scan attribution remains keyed on `device_id` alone, which is correct
+— the worker who badged in at a board is physically present at its readers.
+
+The worker's `zone` is checked against the station's zone on every tap. A mismatch raises a
+`ZONE VIOLATION` security alert but still grants the session, matching the detective posture of
+the supervisor rule.
 
 ### 4.2 Supervisor Dispatch Enforcement
 

@@ -298,6 +298,78 @@ class TestWorkerBadgeHandler:
         conn.close()
         assert any('INACTIVE BADGE' in m and 'EMP-OFF' in m for m in messages)
 
+    def test_session_records_the_station_it_was_opened_at(self, test_db):
+        _seed_worker('EMP-STN', active=1, name='Station Worker')
+        mqtt_subscriber._handle_worker_badge('inventory/warehouse/rack', {
+            'tag_uid': 'BADGE-STN', 'item_id': 'EMP-STN', 'device_id': 'device-stn',
+        })
+        assert mqtt_subscriber._worker_sessions['device-stn']['station'] == 'warehouse_rack'
+
+    def test_supervisor_at_rack_is_not_a_supervisor_at_the_gate(self, test_db):
+        _seed_worker('EMP-SCOPE', active=1, name='Scoped Sup', role='supervisor')
+        mqtt_subscriber._handle_worker_badge('inventory/warehouse/rack', {
+            'tag_uid': 'BADGE-SCOPE', 'item_id': 'EMP-SCOPE', 'device_id': 'device-scope',
+        })
+        assert mqtt_subscriber._supervisor_at('device-scope', 'warehouse_rack') is not None
+        assert mqtt_subscriber._supervisor_at('device-scope', 'warehouse_gate') is None
+
+    def test_station_survives_a_restart(self, test_db):
+        _seed_worker('EMP-PERS', active=1, name='Persist Worker')
+        mqtt_subscriber._handle_worker_badge('inventory/warehouse/gate', {
+            'tag_uid': 'BADGE-PERS', 'item_id': 'EMP-PERS', 'device_id': 'device-pers',
+        })
+        mqtt_subscriber._worker_sessions.clear()
+        mqtt_subscriber._load_sessions()
+        assert mqtt_subscriber._worker_sessions['device-pers']['station'] == 'warehouse_gate'
+
+    def test_out_of_zone_badge_alerts_but_still_grants_a_session(self, test_db):
+        """Detective, like the supervisor rule — operations never deadlock."""
+        conn = get_db()
+        conn.execute("INSERT INTO workers (employee_id, name, role, zone, active) "
+                     "VALUES ('EMP-ZONE', 'Zoned Worker', 'operator', 'factory', 1)")
+        conn.commit()
+        conn.close()
+        mqtt_subscriber._handle_worker_badge('inventory/warehouse/gate', {
+            'tag_uid': 'BADGE-ZONE', 'item_id': 'EMP-ZONE', 'device_id': 'device-zone',
+        })
+        assert 'device-zone' in mqtt_subscriber._worker_sessions
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT message FROM alerts WHERE alert_type = 'security'")
+        messages = [r['message'] for r in c.fetchall()]
+        conn.close()
+        assert any('ZONE VIOLATION' in m and 'EMP-ZONE' in m for m in messages)
+
+    def test_in_zone_badge_raises_no_zone_alert(self, test_db):
+        conn = get_db()
+        conn.execute("INSERT INTO workers (employee_id, name, role, zone, active) "
+                     "VALUES ('EMP-OK', 'In Zone', 'operator', 'warehouse', 1)")
+        conn.commit()
+        conn.close()
+        mqtt_subscriber._handle_worker_badge('inventory/warehouse/gate', {
+            'tag_uid': 'BADGE-OK', 'item_id': 'EMP-OK', 'device_id': 'device-ok',
+        })
+        assert 'device-ok' in mqtt_subscriber._worker_sessions
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT message FROM alerts WHERE alert_type = 'security'")
+        messages = [r['message'] for r in c.fetchall()]
+        conn.close()
+        assert not any('ZONE VIOLATION' in m for m in messages)
+
+    def test_general_zone_worker_is_allowed_everywhere(self, test_db):
+        _seed_worker('EMP-GEN', active=1, name='General Worker', role='operator')
+        mqtt_subscriber._handle_worker_badge('inventory/factory/exit', {
+            'tag_uid': 'BADGE-GEN', 'item_id': 'EMP-GEN', 'device_id': 'device-gen',
+        })
+        assert 'device-gen' in mqtt_subscriber._worker_sessions
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT message FROM alerts WHERE alert_type = 'security'")
+        messages = [r['message'] for r in c.fetchall()]
+        conn.close()
+        assert not any('ZONE VIOLATION' in m for m in messages)
+
     def test_badge_uid_already_bound_to_another_worker_refused(self, test_db):
         """workers.uid is UNIQUE — one physical tag cannot become a second badge."""
         _seed_worker('EMP-OWNER', active=1, name='Owner')

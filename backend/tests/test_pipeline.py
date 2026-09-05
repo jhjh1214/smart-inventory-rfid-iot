@@ -220,12 +220,42 @@ class TestHandleWarehouseGateReceive:
 
 
 class TestHandleWarehouseGateDispatch:
-    def _make_supervisor_session(self, device_id='wh-gate-sup'):
+    def _make_supervisor_session(self, device_id='wh-gate-sup',
+                                 station='warehouse_gate'):
         mqtt_subscriber._worker_sessions[device_id] = {
             'employee_id': 'EMP-SUP', 'name': 'Supervisor',
-            'role': 'supervisor', 'zone': 'warehouse',
+            'role': 'supervisor', 'zone': 'warehouse', 'station': station,
             'expires': time.time() + 300,
         }
+
+    def _unverified_alerts(self):
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT id FROM alerts WHERE alert_type = 'security' "
+                  "AND message LIKE '%UNVERIFIED%'")
+        rows = c.fetchall()
+        conn.close()
+        return rows
+
+    def test_supervisor_at_gate_raises_no_unverified_alert(self, test_db):
+        _seed_tag('WG-SUPOK', 'item-001', 'racked')
+        self._make_supervisor_session('wh-gate-ok', station='warehouse_gate')
+        mqtt_subscriber._handle_warehouse_gate(MockClient(), {
+            'tag_uid': 'WG-SUPOK', 'device_id': 'wh-gate-ok',
+        })
+        assert _get_tag('WG-SUPOK')['state'] == 'dispatched'
+        assert self._unverified_alerts() == []
+
+    def test_supervisor_badged_at_rack_does_not_authorise_the_gate(self, test_db):
+        """One board can carry both readers; a rack tap must not cover the gate."""
+        _seed_tag('WG-SUPRACK', 'item-001', 'racked')
+        self._make_supervisor_session('wh-board-2', station='warehouse_rack')
+        mqtt_subscriber._handle_warehouse_gate(MockClient(), {
+            'tag_uid': 'WG-SUPRACK', 'device_id': 'wh-board-2',
+        })
+        # Detective, not preventive - the dispatch still completes.
+        assert _get_tag('WG-SUPRACK')['state'] == 'dispatched'
+        assert self._unverified_alerts() != []
 
     def test_racked_becomes_dispatched(self, test_db):
         _seed_tag('WG-D01', 'item-001', 'racked', rack_location='A1')

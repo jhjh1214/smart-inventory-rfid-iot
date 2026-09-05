@@ -45,6 +45,29 @@ TOPIC_WAREHOUSE_GATE  = 'inventory/warehouse/gate'
 TOPIC_WAREHOUSE_RACK  = 'inventory/warehouse/rack'
 TOPIC_RETURNS_GATE    = 'inventory/returns/gate'
 
+# ── Station and zone mapping ──────────────────────────────────────────────────
+# A badge session is scoped to the station it was opened at, not merely to the
+# board. One ESP32 can carry two readers — the documented warehouse layout puts
+# warehouse_gate and warehouse_rack on a single board — so badging in to rack a
+# pallet must not silently satisfy the supervisor check at the gate.
+STATION_BY_TOPIC = {
+    TOPIC_FACTORY_WRITTEN: 'factory_writer',
+    TOPIC_FACTORY_EXIT:    'factory_exit',
+    TOPIC_WAREHOUSE_GATE:  'warehouse_gate',
+    TOPIC_WAREHOUSE_RACK:  'warehouse_rack',
+    TOPIC_RETURNS_GATE:    'returns_gate',
+    TOPIC_SCAN:            'legacy',
+}
+
+# Which geographic zone each station sits in, for the workers.zone check.
+ZONE_BY_STATION = {
+    'factory_writer': 'factory',
+    'factory_exit':   'factory',
+    'warehouse_gate': 'warehouse',
+    'warehouse_rack': 'warehouse',
+    'returns_gate':   'warehouse',
+}
+
 status  = {'connected': False, 'last_message': None, 'device_last_seen': None}
 _client = None
 
@@ -62,10 +85,11 @@ def _save_session(device_id: str, sess: dict):
         conn = get_db()
         conn.execute('''
             INSERT OR REPLACE INTO worker_sessions
-            (device_id, employee_id, name, role, zone, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (device_id, employee_id, name, role, zone, station, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (device_id, sess['employee_id'], sess['name'], sess['role'],
-              sess.get('zone', 'general'), int(sess['expires'])))
+              sess.get('zone', 'general'), sess.get('station', 'legacy'),
+              int(sess['expires'])))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -98,6 +122,7 @@ def _load_sessions():
                 'name':        row['name'],
                 'role':        row['role'],
                 'zone':        row['zone'] if row['zone'] else 'general',
+                'station':     row['station'] if row['station'] else 'legacy',
                 'expires':     row['expires_at'],
             }
         if rows:
@@ -264,6 +289,7 @@ def _handle_worker_badge(source_topic, payload):
     tag_uid     = payload.get('tag_uid')
     employee_id = (payload.get('item_id') or '').upper()
     device_id   = payload.get('device_id', 'unknown')
+    station     = STATION_BY_TOPIC.get(source_topic, 'unknown')
     if not employee_id:
         return
 
@@ -300,6 +326,22 @@ def _handle_worker_badge(source_topic, payload):
 
     c.execute('UPDATE workers SET last_seen = CURRENT_TIMESTAMP WHERE employee_id = ?',
               (employee_id,))
+
+    # Zone check — detective, like the supervisor rule in §8. A worker scoped to
+    # one zone badging in at another is recorded and surfaced, but still gets a
+    # session: warehouse operations must never deadlock on a roster detail.
+    zone         = worker['zone'] if worker['zone'] else 'general'
+    station_zone = ZONE_BY_STATION.get(station)
+    if station_zone and zone != 'general' and zone != station_zone:
+        message = (f'ZONE VIOLATION: {worker["name"]} ({employee_id}) is scoped to '
+                   f'{zone} but badged in at {station} ({station_zone}) on {device_id}')
+        c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
+                  (None, 'security', message))
+        events.push({'type': 'security_alert', 'tag_uid': tag_uid,
+                     'item_id': employee_id, 'item_name': worker['name'],
+                     'message': message})
+        print(f'[MQTT] SECURITY: {message}')
+
     conn.commit()
     conn.close()
 
@@ -308,15 +350,31 @@ def _handle_worker_badge(source_topic, payload):
         'employee_id': employee_id,
         'name':        worker['name'],
         'role':        worker['role'],
-        'zone':        worker['zone'] if worker['zone'] else 'general',
+        'zone':        zone,
+        'station':     station,
         'expires':     expires,
     }
     _worker_sessions[device_id] = sess
     _save_session(device_id, sess)
 
-    print(f'[MQTT] Worker authenticated: {worker["name"]} ({employee_id}) @ {device_id}')
+    print(f'[MQTT] Worker authenticated: {worker["name"]} ({employee_id}) '
+          f'@ {device_id}/{station}')
     events.push({'type': 'worker_auth', 'employee_id': employee_id,
-                 'name': worker['name'], 'role': worker['role'], 'device_id': device_id})
+                 'name': worker['name'], 'role': worker['role'],
+                 'device_id': device_id, 'station': station})
+
+
+def _supervisor_at(device_id, station):
+    """Active supervisor session opened at *this* station, or None.
+
+    Sessions are keyed by device_id, but a board can carry two readers. Requiring
+    the session's own station to match stops a badge tap at the rack reader from
+    satisfying the dispatch check at the gate reader on the same board.
+    """
+    w = _get_current_worker(device_id)
+    if w and w.get('role') == 'supervisor' and w.get('station') == station:
+        return w
+    return None
 
 
 def _deny_badge(c, conn, employee_id, name, tag_uid, device_id, message):
@@ -588,8 +646,8 @@ def _carton_warehouse_gate(c, conn, client, payload):
 
     elif state in ('received', 'racked', 'picked', 'returned', 'in'):
         # ── Dispatch ─────────────────────────────────────────────────────────
-        worker = _get_current_worker(device_id)
-        if not worker or worker['role'] != 'supervisor':
+        worker = _supervisor_at(device_id, 'warehouse_gate')
+        if not worker:
             c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
                       (carton['item_id'], 'security',
                        f'UNVERIFIED DISPATCH: carton {carton_id} dispatched from {device_id} '
@@ -751,8 +809,8 @@ def _pallet_warehouse_gate(c, conn, client, payload):
 
     elif state in ('received', 'racked', 'picked', 'returned', 'in'):
         # ── Bulk dispatch ─────────────────────────────────────────────────────
-        worker = _get_current_worker(device_id)
-        if not worker or worker['role'] != 'supervisor':
+        worker = _supervisor_at(device_id, 'warehouse_gate')
+        if not worker:
             c.execute('INSERT INTO alerts (item_id, alert_type, message) VALUES (?, ?, ?)',
                       (None, 'security',
                        f'UNVERIFIED PALLET DISPATCH: {pallet_id} from {device_id} without supervisor'))
@@ -960,7 +1018,7 @@ def _handle_warehouse_gate(client, payload):
         device_id = payload.get('device_id', 'unknown')
         worker    = _get_current_worker(device_id)
         rule      = stock_profiles.policy(tag['stock_profile'])
-        supervised = bool(worker and worker['role'] == 'supervisor')
+        supervised = bool(_supervisor_at(device_id, 'warehouse_gate'))
 
         if not supervised:
             if rule['require_supervisor']:

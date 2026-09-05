@@ -446,16 +446,31 @@ than silent.
 
 Sessions are mirrored to the `worker_sessions` table so they **survive a backend restart**.
 
+**Sessions are scoped to the station, not just the board.** A session records which reader the
+badge was tapped at. One ESP32 can carry two readers — the documented warehouse layout puts
+`warehouse_gate` and `warehouse_rack` on one board — so without this, badging in to rack a
+pallet would silently satisfy the dispatch check at the gate for the next five minutes. Scan
+*attribution* stays board-scoped, which is correct: the worker who badged in at that board is
+physically the one at its readers.
+
 **Supervisor dispatch enforcement.** Dispatch at the warehouse gate — unit, carton, or pallet —
-requires an active session whose role is `supervisor`. If none exists, a `security` alert
+requires an active session whose role is `supervisor` **and which was opened at the gate**. If none exists, a `security` alert
 (`UNVERIFIED DISPATCH`) is raised with the device ID and timestamp. **The dispatch still
 completes**: this is a deliberate choice so a missing badge cannot deadlock warehouse
 operations. The control is detective, not preventive.
 
 ### Worker Zones
 
-Workers carry a `zone` (`warehouse`, `factory`, `general`, …) to scope them geographically.
-Zone is recorded on the session but is not currently used to reject scans.
+Workers carry a `zone` (`warehouse`, `factory`, `general`) scoping them geographically. Each
+station sits in a zone — `factory_writer`/`factory_exit` in `factory`, `warehouse_gate`/
+`warehouse_rack`/`returns_gate` in `warehouse`.
+
+Badging in outside your zone raises a `ZONE VIOLATION` security alert **but still grants the
+session**. This is detective, matching the supervisor rule: a roster detail must never deadlock
+a warehouse. A worker whose zone is `general` is in scope everywhere and never triggers it.
+
+To make it preventive instead, turn the alert branch in `_handle_worker_badge` into an early
+`return` — but read the note in §8 of `CLAUDE.md` first.
 
 ### Pre-seeded Workers
 

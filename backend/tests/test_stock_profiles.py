@@ -49,14 +49,17 @@ def _qty(item_id):
     return q
 
 
-def _supervisor_on(device_id):
-    """An active supervisor session at this station.
+def _supervisor_on(device_id, station='warehouse_gate'):
+    """An active supervisor session opened at this station.
 
     _get_current_worker reads the in-process _worker_sessions cache, not the
-    table, so a session written only to SQLite would not be seen.
+    table, so a session written only to SQLite would not be seen. `station`
+    matters: the dispatch check requires a session opened at the gate, so a
+    session without it is not a supervised dispatch.
     """
     import time
     mqtt_subscriber._worker_sessions[device_id] = {
+        'station': station,
         'employee_id': 'EMP-SUP',
         'name':        'Sup',
         'role':        'supervisor',

@@ -193,6 +193,10 @@ def init_db():
         # 'consumable', which is the behaviour every item had before, so this
         # migration changes nothing until an item is reclassified.
         (15, "ALTER TABLE items ADD COLUMN stock_profile TEXT DEFAULT 'consumable'"),
+
+        # A badge session is scoped to the station it was opened at, so a restart
+        # must not widen it back to the whole board.
+        (16, "ALTER TABLE worker_sessions ADD COLUMN station TEXT DEFAULT 'legacy'"),
     ]
     for version, sql in _MIGRATIONS:
         c.execute('SELECT 1 FROM schema_version WHERE version = ?', (version,))

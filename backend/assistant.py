@@ -90,9 +90,11 @@ def status():
     """Describe the assistant's readiness, for the dashboard and /api/assistant."""
     name = provider_name()
     available = is_available()
+    mod = _PROVIDERS.get(name)
     return {
         'available': available,
         'provider': name,
+        'model': getattr(mod, 'MODEL', '') if mod else '',
         'reason': '' if available else unavailable_reason(),
         'tools': [fn.__name__ for fn in tools.TOOLS],
         'max_question_chars': tools.MAX_QUESTION_CHARS,

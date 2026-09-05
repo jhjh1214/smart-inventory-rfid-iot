@@ -2375,6 +2375,7 @@ setInterval(fetchTransactionTrends, 60000);
 // purpose, so no markdown is parsed and nothing it returns can inject markup.
 
 let _assistantHistory = [];      // [{role, content}] sent back for follow-ups
+let _assistantModel   = '';
 let _assistantReady   = false;
 let _assistantBusy    = false;
 let _assistantInited  = false;
@@ -2395,6 +2396,8 @@ async function initAssistant() {
     renderAssistantLog();
   }
   await fetchAssistantStatus();
+  const input = document.getElementById('assistant-input');
+  if (input && !input.disabled) input.focus();
 }
 
 async function fetchAssistantStatus() {
@@ -2406,9 +2409,11 @@ async function fetchAssistantStatus() {
     const st = await fetch('/api/assistant').then(r => r.json());
     _assistantReady = !!st.available;
 
+    _assistantModel = st.model || '';
     pill.textContent = _assistantReady
       ? `${st.provider} · ready`
       : `${st.provider} · not configured`;
+    pill.title = _assistantModel ? `Model: ${_assistantModel}` : '';
     pill.className = 'badge ' + (_assistantReady ? 'badge-success' : 'badge-warning');
 
     if (_assistantReady) {
@@ -2436,6 +2441,9 @@ function updateAssistantControls() {
   const input = document.getElementById('assistant-input');
   const send  = document.getElementById('assistant-send');
   const on    = _assistantReady && !_assistantBusy;
+  document.querySelectorAll('.assistant-chip').forEach(c => {
+    c.disabled = !on;
+  });
   if (input) {
     input.disabled = !on;
     input.placeholder = _assistantReady
@@ -2469,9 +2477,13 @@ function renderAssistantLog() {
   if (!log) return;
 
   if (!_assistantHistory.length && !_assistantBusy) {
+    // Don't invite the reader to use suggestions that are greyed out.
+    const body = _assistantReady
+      ? 'Try one of the suggestions below, or ask your own question.'
+      : 'Configure a provider on the server to start asking questions.';
     log.innerHTML = `<div class="assistant-empty">
         <p class="assistant-empty-title">Nothing asked yet</p>
-        <p class="assistant-empty-body">Try one of the suggestions below, or ask your own question.</p>
+        <p class="assistant-empty-body">${esc(body)}</p>
       </div>`;
     return;
   }

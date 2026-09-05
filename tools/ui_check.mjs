@@ -138,7 +138,29 @@ ok(failedTurns() === before, 'failed question leaves no dangling turn in the log
 ok(document.getElementById('assistant-send').disabled === false,
    'controls re-enabled after failure');
 
-console.log('\n8. Clear chat');
+console.log('\n8. Unconfigured state disables the controls');
+NEXT = { status: 200, body: { available: false, provider: 'gemini',
+                              model: 'gemini-3.6-flash', tools: [],
+                              reason: 'GEMINI_API_KEY is not set' } };
+await A('fetchAssistantStatus')();
+A('clearAssistantChat')();
+ok(document.getElementById('assistant-input').disabled === true, 'input disabled');
+ok([...document.querySelectorAll('.assistant-chip')].every(c => c.disabled),
+   'suggestion chips disabled, so nothing looks clickable that is not');
+ok(log.textContent.includes('Configure a provider'),
+   'empty state stops inviting use of disabled suggestions');
+ok(document.getElementById('assistant-provider').title.includes('gemini-3.6-flash'),
+   'pill tooltip names the model');
+
+console.log('\n9. Ready state re-enables them');
+NEXT = { status: 200, body: { available: true, provider: 'gemini',
+                              model: 'gemini-3.6-flash', tools: [], reason: '' } };
+await A('fetchAssistantStatus')();
+ok(document.getElementById('assistant-input').disabled === false, 'input enabled again');
+ok([...document.querySelectorAll('.assistant-chip')].every(c => !c.disabled),
+   'chips enabled again');
+
+console.log('\n10. Clear chat');
 A('clearAssistantChat')();
 ok(log.querySelectorAll('.assistant-turn').length === 0, 'log emptied');
 ok(log.textContent.includes('Nothing asked yet'), 'empty state restored');

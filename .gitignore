@@ -58,3 +58,4 @@ docs/figures/
 node_modules/
 package-lock.json
 package.json
+screenshots/

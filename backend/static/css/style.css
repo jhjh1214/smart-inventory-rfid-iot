@@ -1140,6 +1140,14 @@ body { background: #F5F3FF; }
   transition: background 0.15s, border-color 0.15s;
 }
 .assistant-chip:hover { background: #EDE9FE; border-color: #C4B5FD; }
+.assistant-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.assistant-chip:disabled:hover { background: #F5F3FF; border-color: #DDD6FE; }
+
+/* Visually hidden, still read by screen readers. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 
 .assistant-composer { display: flex; gap: 0.5rem; align-items: stretch; }
 .assistant-input { flex: 1; }

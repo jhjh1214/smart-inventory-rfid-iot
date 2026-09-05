@@ -32,7 +32,7 @@ smart-inventory-rfid-iot/
 │   ├── inventory.db         Runtime DB — gitignored, created on first run
 │   ├── templates/           login.html, dashboard.html (9-tab SPA shell)
 │   ├── static/css|js/       style.css, dashboard.js (all frontend logic, no build step)
-│   └── tests/               pytest suite, 389 tests
+│   └── tests/               pytest suite, 513 tests
 │   ├── stock_profiles.py    Per-item dispatch policy (consumable/returnable/serialised)
 ├── esp32/
 │   ├── config.py            PER-BOARD config: DEVICE_ID, READERS, Wi-Fi, broker, topics
@@ -215,7 +215,7 @@ A carton scan moves `unit_count` units; a pallet scan moves every carton on it, 
 
 ## 7. Known state of the test suite
 
-`python -m pytest` → **389 passed, 0 failed** (~3.8 min). The ten stale failures recorded in
+`python -m pytest` → **513 passed, 0 failed** (~4.7 min). The ten stale failures recorded in
 earlier audits were fixed **in the tests only** — no product code changed:
 
 | Was failing | How it was fixed |
@@ -329,9 +329,17 @@ Two claims do not hold, and are the priority work items:
    i.e. the *oldest* 500 rows despite documenting itself as "recent" — harmless below 500
    transactions, permanently frozen above it. The row fetch is now `_recent_transactions()`.
 
-   **Still open:** no `warehouse_dispatch` row in the demo DB falls inside the last 30 days
-   (newest is 2026-07-01), so the GBR path is covered by tests but invisible in a live demo
-   until recent dispatch scans exist.
+   **Closed (2026-09-05).** `tools/seed_demo.py` builds its ledger relative to `_utcnow()`, so
+   a re-seed always lands a full 30-day dispatch window ending today. Verified against the live
+   DB: 296 `warehouse_dispatch` rows inside the last 30 days, and `get_all_analytics()` returns
+   `forecast_method = 'gradient_boosting'` for **15 of 15** items — the ML path is real in a
+   live demo, not just under test. ABC returns cumulative-Pareto classes over units moved, and
+   `detect_scan_anomalies()` flags 25 rows, 22 of them real movements.
+
+   **Demo-day caveat, not a code bug:** `GEMINI_API_KEY` is read from the environment at import
+   time and **nothing in the repo sets it** — not `start.ps1`, and there is no `.env`. Launching
+   via `start.bat` without exporting the key first leaves the Assistant tab reporting itself
+   unavailable. The README documents the export; the one-click path does not perform it.
 
 Full deltas between abstract v1 and v2, and the complete claim-vs-code table, are in the
 README's *Academic Deliverables* and *Specification Gaps to Close* sections.

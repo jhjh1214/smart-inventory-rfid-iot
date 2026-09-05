@@ -1,6 +1,7 @@
 """Tests for analytics endpoints and analytics.py functions."""
 import pytest
 from database import get_db
+import analytics
 from analytics import (
     get_item_analytics, get_all_analytics, get_transaction_trends,
     get_abc_analysis, get_inventory_summary, get_pipeline_summary,
@@ -314,6 +315,92 @@ class TestAbcIsCumulativePareto:
         assert result['item-001']['volume'] == 100
         assert result['item-002']['volume'] == 5
         assert result['item-001']['class'] == 'A'
+
+
+class TestPerItemAnomalyRule:
+    """Isolation Forest flags CONTAMINATION of every window by construction, so
+    rolling raw flags up per item marks everything as anomalous once there is
+    real traffic. An item must beat the rate chance would give it."""
+
+    def _fake(self, monkeypatch, anomalies, scans):
+        monkeypatch.setattr(analytics, 'detect_scan_anomalies',
+                            lambda: [{'item_id': i} for i in anomalies])
+        rows = []
+        for item_id, n in scans.items():
+            rows.extend({'item_id': item_id} for _ in range(n))
+        monkeypatch.setattr(analytics, '_recent_transactions', lambda limit=None: rows)
+
+    def test_single_anomaly_on_a_busy_item_is_noise(self, monkeypatch):
+        # 200 scans at 5% contamination: 10 flags are expected by chance, so one
+        # is not evidence of anything.
+        self._fake(monkeypatch, ['item-001'], {'item-001': 200})
+        assert analytics._anomaly_item_ids() == set()
+
+    def test_anomalies_above_the_expected_rate_are_surfaced(self, monkeypatch):
+        self._fake(monkeypatch, ['item-001'] * 15, {'item-001': 200})
+        assert analytics._anomaly_item_ids() == {'item-001'}
+
+    def test_quiet_item_needs_at_least_two(self, monkeypatch):
+        # 10 scans expects 0.5 flags, but a lone outlier still should not trip it.
+        self._fake(monkeypatch, ['item-002'], {'item-002': 10})
+        assert analytics._anomaly_item_ids() == set()
+        self._fake(monkeypatch, ['item-002', 'item-002'], {'item-002': 10})
+        assert analytics._anomaly_item_ids() == {'item-002'}
+
+    def test_no_anomalies_flags_nothing(self, monkeypatch):
+        self._fake(monkeypatch, [], {'item-001': 100})
+        assert analytics._anomaly_item_ids() == set()
+
+    def test_busy_and_quiet_items_judged_separately(self, monkeypatch):
+        # Same raw count, different volumes: only the quiet one stands out.
+        self._fake(monkeypatch, ['busy', 'busy', 'quiet', 'quiet'],
+                   {'busy': 400, 'quiet': 12})
+        assert analytics._anomaly_item_ids() == {'quiet'}
+
+
+class TestTagStateSummary:
+    """The Overview doughnut buckets tags as In Warehouse / With Product /
+    Consumed. Those names predate the pipeline; the query used to count only the
+    legacy in/out/consumed states, so every pipeline tag reported as zero and the
+    chart rendered empty."""
+
+    def _seed_tag(self, uid, state):
+        conn = get_db()
+        conn.execute("INSERT INTO rfid_tags (uid, item_id, state) VALUES (?, 'item-001', ?)",
+                     (uid, state))
+        conn.commit()
+        conn.close()
+
+    def test_pipeline_states_are_counted(self, test_db):
+        for uid, state in [('T-RACK', 'racked'), ('T-RECV', 'received'),
+                           ('T-RET', 'returned'), ('T-TAG', 'tagged'),
+                           ('T-TRAN', 'in_transit'), ('T-PICK', 'picked'),
+                           ('T-DISP', 'dispatched')]:
+            self._seed_tag(uid, state)
+
+        tags = get_inventory_summary()['tags']
+        assert tags['in'] == 3, 'racked, received and returned are in the warehouse'
+        assert tags['out'] == 3, 'tagged, in_transit and picked are out with product'
+        assert tags['consumed'] == 1, 'dispatched has left the building'
+
+    def test_legacy_states_still_counted(self, test_db):
+        for uid, state in [('L-IN', 'in'), ('L-OUT', 'out'), ('L-CONS', 'consumed')]:
+            self._seed_tag(uid, state)
+        tags = get_inventory_summary()['tags']
+        assert tags['in'] == 1 and tags['out'] == 1 and tags['consumed'] == 1
+
+    def test_total_counts_every_tag(self, test_db):
+        for uid, state in [('X-1', 'racked'), ('X-2', 'dispatched'),
+                           ('X-3', 'some_future_state')]:
+            self._seed_tag(uid, state)
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM rfid_tags')
+        rows = c.fetchone()[0]
+        conn.close()
+        # Total is a straight row count, so an unbucketed state cannot make the
+        # chart silently under-report the fleet.
+        assert get_inventory_summary()['tags']['total'] == rows
 
 
 class TestAnomalyWindow:

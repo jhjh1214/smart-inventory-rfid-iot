@@ -23,6 +23,13 @@ RECEIPT_ACTION  = 'warehouse_receive'
 # claimed. A lag-3 model fitted to an almost-empty series is ML in name only.
 MIN_ACTIVE_DAYS = 3
 
+# Isolation Forest settings. CONTAMINATION is the share of rows the detector
+# flags by construction, which is what makes the per-item rule below
+# necessary - see _anomaly_item_ids.
+ANOMALY_WINDOW  = 500
+CONTAMINATION   = 0.05
+MIN_ANOMALIES   = 2
+
 
 # ── Per-item helpers ──────────────────────────────────────────────────────────
 
@@ -155,7 +162,7 @@ def _recent_transactions(limit=500):
 def detect_scan_anomalies():
     """Isolation Forest anomaly detection on recent scan transactions.
     Returns list of anomalous transaction dicts (most-recent last)."""
-    rows = _recent_transactions(limit=500)
+    rows = _recent_transactions(limit=ANOMALY_WINDOW)
 
     if not _SKLEARN or len(rows) < 10:
         return []
@@ -182,7 +189,8 @@ def detect_scan_anomalies():
         return []
 
     X = np.array(features, dtype=float)
-    model = IsolationForest(n_estimators=100, contamination=0.05, random_state=42)
+    model = IsolationForest(n_estimators=100, contamination=CONTAMINATION,
+                            random_state=42)
     labels = model.fit_predict(X)
 
     return [
@@ -200,8 +208,36 @@ def detect_scan_anomalies():
 
 
 def _anomaly_item_ids():
-    """Set of item_ids with anomalous recent scans — used to flag per-item analytics."""
-    return {a['item_id'] for a in detect_scan_anomalies()}
+    """Items whose anomalous scans exceed what the detector flags by chance.
+
+    Isolation Forest flags CONTAMINATION of every window by construction, so
+    for a busy item a single flagged scan is the expected background rate
+    rather than evidence of anything. Rolling the raw flags up per item
+    therefore marks every item as anomalous once there is enough traffic,
+    which tells a reader nothing.
+
+    An item is surfaced only when its anomaly count exceeds the rate chance
+    would produce over its own scans, with a floor of MIN_ANOMALIES so a
+    one-off never trips it.
+    """
+    anomalies = detect_scan_anomalies()
+    if not anomalies:
+        return set()
+
+    scans = {}
+    for row in _recent_transactions(limit=ANOMALY_WINDOW):
+        scans[row['item_id']] = scans.get(row['item_id'], 0) + 1
+
+    flagged = {}
+    for a in anomalies:
+        flagged[a['item_id']] = flagged.get(a['item_id'], 0) + 1
+
+    out = set()
+    for item_id, count in flagged.items():
+        expected = CONTAMINATION * scans.get(item_id, 0)
+        if count >= max(MIN_ANOMALIES, math.ceil(expected)):
+            out.add(item_id)
+    return out
 
 
 def get_all_analytics():
@@ -359,17 +395,27 @@ def get_inventory_summary():
     out_of_stock = r['out_of_stock'] or 0
     low_stock    = r['low_stock']    or 0
 
+    # The dashboard doughnut buckets tags as In Warehouse / With Product /
+    # Consumed. Those three names predate the pipeline, so the query used to
+    # count only the legacy 'in' / 'out' / 'consumed' states and reported zero
+    # for every pipeline tag. Each pipeline state now maps to the bucket that
+    # matches where the goods physically are.
     c.execute('''
         SELECT
-            SUM(CASE WHEN state = 'out'      THEN 1 ELSE 0 END) AS tags_out,
-            SUM(CASE WHEN state = 'in'       THEN 1 ELSE 0 END) AS tags_in,
-            SUM(CASE WHEN state = 'consumed' THEN 1 ELSE 0 END) AS tags_consumed
+            SUM(CASE WHEN state IN ('out', 'tagged', 'in_transit', 'picked',
+                                    'return_pending') THEN 1 ELSE 0 END) AS tags_out,
+            SUM(CASE WHEN state IN ('in', 'received', 'racked', 'returned')
+                     THEN 1 ELSE 0 END) AS tags_in,
+            SUM(CASE WHEN state IN ('consumed', 'dispatched')
+                     THEN 1 ELSE 0 END) AS tags_consumed,
+            COUNT(*) AS tags_total
         FROM rfid_tags
     ''')
     t = c.fetchone()
     tags_out      = t['tags_out']      or 0
     tags_in       = t['tags_in']       or 0
     tags_consumed = t['tags_consumed'] or 0
+    tags_total    = t['tags_total']    or 0
 
     c.execute('''
         SELECT COUNT(DISTINCT item_id) AS n FROM transactions
@@ -412,6 +458,8 @@ def get_inventory_summary():
             'out':      tags_out,
             'in':       tags_in,
             'consumed': tags_consumed,
-            'total':    tags_out + tags_in + tags_consumed,
+            # Every tag row, so the total still reconciles if a future state
+            # is added without being bucketed above.
+            'total':    tags_total,
         },
     }

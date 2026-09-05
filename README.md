@@ -26,6 +26,7 @@ moves the entire load.
 - [Dashboard](#dashboard)
 - [Analytics Engine](#analytics-engine)
 - [LLM Assistant](#llm-assistant)
+- [Stock profiles](#stock-profiles)
 - [Integrations — Webhooks, CSV, Backup](#integrations--webhooks-csv-backup)
 - [MQTT Topics](#mqtt-topics)
 - [Project Structure](#project-structure)
@@ -691,6 +692,39 @@ node tools/screenshot.mjs --tab assistant
 
 ---
 
+### Stock profiles
+
+Every item carries a `stock_profile` that changes what dispatch *means* for it. A profile adds
+**no pipeline stages** — the five-stage state machine is exactly as published; a profile changes
+two decisions the warehouse gate makes when goods leave.
+
+| Profile | Dispatch | Supervisor | For |
+|---------|----------|-----------|-----|
+| `consumable` *(default)* | Terminal | Alert only | Components used up when issued |
+| `returnable` | Opens a return (`return_pending`) | Alert only | Tools expected back |
+| `serialised` | Terminal | **Required — refused without one** | High-value, individually tracked |
+
+- **`returnable`** removes the manual step. A tool scanned out at the gate goes to
+  `return_pending`, so scanning it back at the rack returns it to stock through the existing
+  handler — no admin marking it for return by hand.
+- **`serialised`** is the one class where the supervisor check is *preventive*. Without an active
+  supervisor session the dispatch is refused: no state change, no quantity change, no audit row,
+  and a `BLOCKED DISPATCH` alert. Everything else keeps the deliberate detective behaviour, because
+  warehouse operations must never deadlock on a badge reader
+  ([Tag Lifecycle](#tag-lifecycle--state-machine)).
+- The action stays `warehouse_dispatch` for every profile, so the demand forecast counts a
+  returnable issue like any other — the goods did leave.
+
+`consumable` reproduces the original behaviour exactly and migration 15 defaults every existing
+row to it, so adding profiles changed nothing until an item was reclassified. An unrecognised
+value falls back to `consumable` rather than failing, so a row written by an older build can
+never stall the pipeline.
+
+Managers set the profile from the Inventory tab's edit dialog; `GET /api/stock-profiles` serves
+the catalogue so the wording lives server-side.
+
+---
+
 ## Integrations — Webhooks, CSV, Backup
 
 **Outbound webhooks** (`webhooks` table, admin-managed). Each webhook subscribes to a
@@ -1302,6 +1336,7 @@ it matters before the system touches real stock or an untrusted network.
 |------|-----|
 | Analytics | ~~Demand forecast, trends, and ABC query `scan_in`/`scan_out`~~ — fixed; all three now read the pipeline's own actions. Demo data still has no dispatch inside the 30-day window, so the ML path needs recent scans to show in a live demo |
 | Reservations | `reserved_qty` is set by the reserve endpoints but never consumed or released by dispatch, and no dashboard control calls it |
+| Worker zones | Recorded on the session but never used to reject a scan, so a worker badged into one zone can authorise a scan at any station |
 | Pallets | **Fixed, and the cause ran deeper than this.** `rfid_tags.item_id` is a foreign key into `items`, and a pallet id is not an item, so `_pallet_factory_written` raised `FOREIGN KEY constraint failed` — **no pallet tag could ever be registered**. Pallet lifecycle state now lives in `pallets.state` (cartons are unaffected: they carry a real `item_id`), a dedicated `_pallet_factory_exit` moves the pallet and its cartons to `in_transit`, and the gate falls back to `pallets.state` instead of assuming `in_transit`. The subsystem had no tests at all; it now has nine |
 | Purchase orders | Receipt quantity **fixed**: `_check_purchase_order(c, item_id, qty)` credits what actually arrived — 1 for a unit, the carton's `unit_count`, the per-SKU total for a pallet — so a bulk receipt can now fulfil an order. **Still open:** POs carry no supplier, unit cost or expected date, and are not linked to the tags that fulfil them |
 | Referential cleanup | Deleting an item removes its tags, POs and write jobs but leaves `cartons` orphaned |

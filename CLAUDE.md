@@ -33,6 +33,7 @@ smart-inventory-rfid-iot/
 │   ├── templates/           login.html, dashboard.html (9-tab SPA shell)
 │   ├── static/css|js/       style.css, dashboard.js (all frontend logic, no build step)
 │   └── tests/               pytest suite, 389 tests
+│   ├── stock_profiles.py    Per-item dispatch policy (consumable/returnable/serialised)
 ├── esp32/
 │   ├── config.py            PER-BOARD config: DEVICE_ID, READERS, Wi-Fi, broker, topics
 │   ├── boot.py              Wi-Fi bring-up, selects broker IP from the matched network
@@ -129,7 +130,7 @@ Default logins: `admin/admin123`, `manager/manager123`, `viewer/viewer123`.
 6. **Escape all interpolated values in `dashboard.js`** with the `esc()` helper before putting
    them in `innerHTML`. This is currently consistent across all ~70 sites — keep it that way.
 7. **Migrations are append-only.** Add a new `(version, sql)` tuple to `_MIGRATIONS` in
-   `database.py`; never renumber or edit an existing one. Currently 14 migrations.
+   `database.py`; never renumber or edit an existing one. Currently 15 migrations.
 8. **`get_db()` returns a fresh connection per call** with WAL, `busy_timeout=3000`, and
    `foreign_keys=ON`. Handlers open, use, commit, close. There is no connection pool and no ORM.
 
@@ -234,7 +235,9 @@ Do not "fix the code" to make a test pass — fix the test, and only when asked.
 
 Flag these if relevant, but do not silently change them:
 
-- Dispatch proceeds without a supervisor (alert only) — see §5.
+- Dispatch proceeds without a supervisor (alert only) — see §5. The one exception is an item
+  whose `stock_profile` is `serialised`, where the check is preventive and the dispatch is
+  refused outright. Everything else keeps the detective behaviour on purpose.
 - `delete_item` turns `PRAGMA foreign_keys = OFF` and leaves `transactions` rows pointing at the
   deleted item. This is intentional: the audit trail outlives the catalogue record.
 - Legacy `inventory/scan` handling coexists with the pipeline handlers.

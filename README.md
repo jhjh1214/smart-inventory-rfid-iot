@@ -546,8 +546,9 @@ module degrades gracefully to the statistical fallbacks.
 | **Risk score** | Days of stock remaining → 90 (≤ 3 d), 60 (≤ 7 d), 20 (otherwise) |
 | **ABC analysis** | Items ranked by units moved (`ABS(quantity_change)` over the two warehouse gate actions); cumulative Pareto banding — first 80 % of volume = A, up to 95 % = B, tail = C |
 | **Anomaly detection** | Isolation Forest (contamination 0.05) over the 500 **most recent** transactions, read oldest-first so the inter-scan gap is computed forward in time; featurised as hour-of-day, weekday, |Δqty|, gap |
+| **Per-item anomaly flag** | An item is flagged only when its anomaly count beats the rate chance would give it — `contamination × its own scans`, floor of 2. Isolation Forest flags 5 % of any window by construction, so rolling raw flags up per item marked *every* item once traffic was realistic |
 | **Transaction trends** | Daily received / dispatched counts, zero-filled for missing days |
-| **Inventory summary** | Health score, low-stock / out-of-stock / dead-stock counts, today's scans, today's security events |
+| **Inventory summary** | Health score, low-stock / out-of-stock / dead-stock counts, today's scans, today's security events, and tag counts bucketed as in-warehouse / with-product / consumed across **both** the pipeline and legacy states |
 | **Pipeline summary** | Tag counts per stage, per-item stage breakdown, rack utilisation, write-job history |
 
 **Demand signal.** `warehouse_dispatch` is what counts as demand — the only action recording
@@ -646,6 +647,47 @@ detail.
 > [Security Posture](#security-posture--known-limitations)). Running a local
 > model would resolve that; the provider seam exists so a third adapter is a
 > small change.
+
+---
+
+### Populating a demo
+
+A fresh database has ten items, one tag and no recent movement, so most tabs are empty and the
+forecast correctly reports zero demand for everything. `tools/seed_demo.py` backfills a coherent
+world: 30 days of receive/dispatch history, ~90 tags spread across the pipeline states, cartons
+on pallets, purchase orders, write jobs and alerts.
+
+```powershell
+.venv\Scripts\python tools\seed_demo.py --status    # what is already seeded
+.venv\Scripts\python tools\seed_demo.py --dry-run   # inspect before writing
+.venv\Scripts\python tools\seed_demo.py --yes       # write it
+```
+
+It never runs on its own, requires `--yes`, refuses to seed twice without `--force`, and never
+edits or deletes an existing row. History is generated **backwards from each item's present
+quantity**, so the ledger lands exactly on `items.quantity` — that invariant and a
+never-negative running balance are both asserted before anything is written, and a ledger that
+fails either is refused outright. Every seeded transaction carries `device_id='demo-seed'` and
+seeded tags use a `DE` UID prefix, so synthetic rows stay distinguishable from real scans.
+
+Timestamps are written in **UTC**, matching SQLite's `CURRENT_TIMESTAMP`; today's events are
+clamped to the past so nothing appears in the future in the live feed.
+
+Station sessions expire after 300 s by design, so the Workers tab shows a live session only
+briefly after seeding.
+
+### Screenshots
+
+`tools/screenshot.mjs` captures every tab to `screenshots/` (gitignored) using Chrome or Edge —
+useful for report figures, and how the UI is checked. Optional, and separate from the test
+suite; the project itself still has no build step.
+
+```powershell
+npm install puppeteer-core
+node tools/screenshot.mjs            # all tabs, light theme
+node tools/screenshot.mjs --dark
+node tools/screenshot.mjs --tab assistant
+```
 
 ---
 

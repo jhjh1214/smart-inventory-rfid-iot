@@ -43,6 +43,9 @@ smart-inventory-rfid-iot/
 ├── firmware/                MicroPython image for reflashing (gitignored, zip-only)
 ├── tools/
 │   ├── requirements-esp32.txt  esptool + mpremote pins for the toolchain venv
+│   ├── seed_demo.py         opt-in demo data: ledger, tags, cartons, pallets, POs
+│   ├── ui_check.mjs         jsdom checks for the Assistant tab (optional, needs jsdom)
+│   ├── screenshot.mjs       captures every tab to screenshots/ (optional, needs Chrome)
 │   └── esptoolenv/          venv for esptool + mpremote — MUST be rebuilt per machine
 ├── docs/                    Academic deliverables, ~830 MB, all gitignored (zip-only)
 │   ├── uec/                 UEC abstract v1/v2 + poster
